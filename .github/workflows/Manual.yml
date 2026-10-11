@@ -38,34 +38,40 @@ jobs:
             wget
 
       - name: Download Poryscript
-  run: |
-    cd tools
-    rm -rf poryscript-linux poryscript poryscript.zip
-    wget -O poryscript.zip https://github.com/huderlem/poryscript/releases/download/3.3.0/poryscript-linux.zip
-    unzip -o poryscript.zip
-    mv poryscript-linux poryscript
-    rm poryscript.zip
+        run: |
+          cd tools
+          rm -rf poryscript-linux poryscript poryscript.zip
+          wget -O poryscript.zip \
+            https://github.com/huderlem/poryscript/releases/download/3.3.0/poryscript-linux.zip
+          unzip -o poryscript.zip
+          mv poryscript-linux poryscript
+          rm poryscript.zip
 
       - name: Build agbcc
         working-directory: agbcc
-        run: ./build.sh
+        run: |
+          ./build.sh
 
       - name: Checkout vanilla pokeemerald
         run: |
           git clone https://github.com/pret/pokeemerald.git tools/pokeemerald
 
       - name: Install agbcc into vanilla pokeemerald
-        run: ./agbcc/install.sh tools/pokeemerald
+        run: |
+          ./agbcc/install.sh tools/pokeemerald
 
       - name: Build EliteRedux
-        run: make -j"$(nproc)" all
+        run: |
+          make -j"$(nproc)" all
 
       - name: Build vanilla pokeemerald
         working-directory: tools/pokeemerald
-        run: make -j"$(nproc)"
+        run: |
+          make -j"$(nproc)"
 
       - name: Verify ROM files
         run: |
+          echo "Checking ROM files..."
           ls -lh pokeemerald.gba
           ls -lh tools/pokeemerald/pokeemerald.gba
           ls -lh flips-linux
@@ -78,7 +84,7 @@ jobs:
             pokeemerald.gba \
             EliteRedux.bps
 
-      - name: Upload BPS patch
+      - name: Upload BPS file
         uses: actions/upload-artifact@v4
         with:
           name: pokeemerald_patch
