@@ -5,29 +5,25 @@ on: workflow_dispatch
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      GAME_VERSION: EMERALD
-      GAME_REVISION: 0
-      GAME_LANGUAGE: ENGLISH
-      MODERN: 1
-      COMPARE: 0
     steps:
-      - name: Checkout Source Code Clean
+      - name: Checkout Minimal Code
         uses: actions/checkout@v4
         with:
           submodules: false
           depth: 1
 
-      - name: Free Disk Space
+      - name: Create Linux Memory Swap (Anti-OOM)
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
+          sudo swapoff -a
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
 
       - name: Install Compiler Toolchain
         run: |
           sudo apt update
-          sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip git build-essential
+          sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip build-essential
 
       - name: Inject Precompiled Poryscript
         run: |
@@ -45,9 +41,9 @@ jobs:
           make -C tools/gbagfx
           make -C tools/scaninc
 
-      - name: Compile Custom ROM
+      - name: Safe Memory Compilation
         run: |
-          make -j$(nproc) MODERN=1
+          make -j2 MODERN=1
 
       - name: Upload Finished GBA File
         uses: actions/upload-artifact@v4
