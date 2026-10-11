@@ -6,7 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Source Code
+      - name: Checkout Source Code Clean
         uses: actions/checkout@v4
         with:
           submodules: false
@@ -17,16 +17,11 @@ jobs:
           sudo apt update
           sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip git build-essential
 
-      - name: Fetch and Extract Poryscript Native
+      - name: Secure Local Poryscript Setup
         run: |
           mkdir -p tools
-          curl -L "https://github.com" -o tools/poryscript.zip
-          cd tools
-          unzip poryscript.zip
-          mv poryscript-linux poryscript || true
-          chmod +x poryscript || true
-          rm -f poryscript.zip
-          cd ..
+          cp poryscript-linux/poryscript tools/poryscript
+          chmod +x tools/poryscript
 
       - name: Install AGBCC Compiler
         run: |
