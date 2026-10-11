@@ -1,50 +1,60 @@
-name: CompileEliteRedux
+name: ManualBuild
 
 on: workflow_dispatch
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      GAME_VERSION: EMERALD
+      GAME_REVISION: 0
+      GAME_LANGUAGE: ENGLISH
+      MODERN: 0
+      COMPARE: 0
     steps:
-      - name: Checkout Source Code Clean
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Checkout agbcc
+        uses: actions/checkout@v2
         with:
-          submodules: false
-          depth: 1
+          path: agbcc
+          repository: pret/agbcc
 
-      - name: Install Toolchain Minimal
-        run: |
-          sudo apt update
-          sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip git build-essential golang-go
+      - name: Install binutils
+        run: sudo apt install gcc-arm-none-eabi binutils-arm-none-eabi
+        # build-essential, git, and libpng-dev are already installed
+        # gcc-arm-none-eabi is only needed for the modern build
+        # as an alternative to dkP
+      - name: Download poryscript
+        run: cd tools && wget https://github.com/huderlem/poryscript/releases/download/3.3.0/poryscript-linux.zip && unzip poryscript-linux.zip -d ./ && rm ./poryscript-linux.zip && mv ./poryscript-linux ./poryscript && ls && cd ..
+        # Downloads poryscript and unzips it
 
-      - name: Compile Poryscript From Source Native
+      - name: Install agbcc
         run: |
-          mkdir -p tools
-          GO111MODULE=on go install ://github.com
-          cp $(go env GOPATH)/bin/poryscript tools/poryscript
-          chmod +x tools/poryscript
-
-      - name: Install AGBCC Compiler
-        run: |
-          cd tools
-          git clone https://github.com
-          cd agbcc
           ./build.sh
-          ./install.sh ../..
-          cd ../..
+          ./install.sh ../
+        working-directory: agbcc
 
-      - name: Build Native Tools
-        run: |
-          make -C tools/preproc
-          make -C tools/gbagfx
-          make -C tools/scaninc
+      - name: Agbcc
+        run: make -j${nproc} all
 
-      - name: Compile Custom ROM
-        run: |
-          make -j$(nproc) MODERN=1
+      - name: Download pokeemerald repo
+        run: pwd && cd tools && git clone https://github.com/pret/pokeemerald
+        # Clones pokeemerald repo
 
-      - name: Upload Finished GBA File
-        uses: actions/upload-artifact@v4
+      - name: Install agbcc to vanilla emerald
+        run: pwd && cd tools && ls && cp -r agbcc pokeemerald/tools/ && cd pokeemerald && pwd
+
+      - name: Build pokeemerald repo
+        run: pwd && cd tools && cd pokeemerald && pwd && ls && make -j${nproc}
+        # builds agbcc to pokeemerald repo
+
+      - name: Build the patch
+        run: chmod -R 755 ./flips-linux && ls && ./flips-linux --create tools/pokeemerald/pokeemerald.gba pokeemerald.gba EliteRedux.bps
+
+      - name: Upload bps file
+        uses: actions/upload-artifact@v2
         with:
-          name: EliteRedux-v265-Débridé
-          path: "*.gba"
+          name: pokeemerald_patch
+          path: EliteRedux.bps
