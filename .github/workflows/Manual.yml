@@ -57,8 +57,9 @@ jobs:
           git clone https://github.com/pret/pokeemerald.git tools/pokeemerald
 
       - name: Install agbcc into vanilla pokeemerald
+        working-directory: agbcc
         run: |
-          ./agbcc/install.sh tools/pokeemerald
+          ./install.sh ../tools/pokeemerald
 
       - name: Build EliteRedux
         run: |
@@ -71,7 +72,7 @@ jobs:
 
       - name: Verify ROM files
         run: |
-          echo "Checking ROM files..."
+          echo "Checking generated files..."
           ls -lh pokeemerald.gba
           ls -lh tools/pokeemerald/pokeemerald.gba
           ls -lh flips-linux
