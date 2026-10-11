@@ -73,11 +73,11 @@ jobs:
           rm poryscript-linux.zip
           cd ..
 
-      - name: Fix C23 compiler flag
+      - name: Fix compiler compatibility flags
         run: |
           sed -i 's/-std=gnu23/-std=gnu2x/g' Makefile
-
-          grep -n -- '-std=gnu2x' Makefile
+          sed -i 's/-Werror/-Werror -Wno-error=strict-aliasing/g' Makefile
+          grep -nE 'gnu2x|Wno-error=strict-aliasing' Makefile
 
       - name: Build EliteRedux
         run: |
