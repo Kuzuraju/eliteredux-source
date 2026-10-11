@@ -16,14 +16,21 @@ jobs:
       COMPARE: 0
 
     steps:
+      # Checkout without automatically fetching the broken submodule.
       - name: Checkout EliteRedux
         uses: actions/checkout@v4
-
-      - name: Checkout agbcc
-        uses: actions/checkout@v4
         with:
-          repository: pret/agbcc
-          path: agbcc
+          submodules: false
+
+      # Fetch the required configuration/protobuf repository directly.
+      - name: Checkout proto files
+        run: |
+          rm -rf proto
+          git clone --depth 1 --branch upcoming \
+            https://github.com/Elite-Redux/er-config.git proto
+
+          test -d proto
+          find proto -type f \( -name '*.proto' -o -name '*.textproto' \) | head -20
 
       - name: Install dependencies
         run: |
@@ -36,69 +43,69 @@ jobs:
             binutils-arm-none-eabi \
             unzip \
             wget \
-            openjdk-17-jdk
+            openjdk-17-jdk \
+            kotlin
 
+      # Download the version used by upstream Elite Redux.
       - name: Download Poryscript
         run: |
           cd tools
-          rm -rf poryscript-linux poryscript.zip poryscript
-          wget -O poryscript.zip \
-            https://github.com/huderlem/poryscript/releases/download/3.3.0/poryscript-linux.zip
-          unzip -o poryscript.zip
-          rm poryscript.zip
+          rm -rf poryscript poryscript-linux poryscript-linux.zip
+          wget -O poryscript-linux.zip \
+            https://github.com/huderlem/poryscript/releases/download/3.5.2/poryscript-linux.zip
+          unzip -o poryscript-linux.zip
           mv poryscript-linux poryscript
-          chmod +x poryscript/poryscript
+          rm poryscript-linux.zip
+          cd ..
 
-      - name: Build agbcc
-        working-directory: agbcc
-        run: |
-          ./build.sh
-
-      - name: Checkout vanilla pokeemerald
-        run: |
-          git clone https://github.com/pret/pokeemerald.git vanilla-pokeemerald
-
-      - name: Install agbcc into vanilla pokeemerald
-        working-directory: agbcc
-        run: |
-          ./install.sh ../vanilla-pokeemerald
-
-      - name: Build vanilla pokeemerald
-        working-directory: vanilla-pokeemerald
+      # Build Elite Redux and its tools.
+      - name: Build EliteRedux
         run: |
           make -j"$(nproc)"
 
-      - name: Verify vanilla ROM
+      # Get the vanilla source repository.
+      - name: Checkout vanilla pokeemerald
         run: |
-          test -f vanilla-pokeemerald/pokeemerald.gba
-          ls -lh vanilla-pokeemerald/pokeemerald.gba
+          git clone https://github.com/pret/pokeemerald.git tools/pokeemerald
 
-      - name: Build EliteRedux
+      # Build and install agbcc into the vanilla repository.
+      - name: Build and install agbcc
+        working-directory: tools
         run: |
-          make -j"$(nproc)" all
+          git clone https://github.com/pret/agbcc.git
+          cd agbcc
+          ./build.sh
+          ./install.sh ../pokeemerald
 
-      - name: Verify EliteRedux ROM
+      - name: Build vanilla pokeemerald
+        working-directory: tools/pokeemerald
         run: |
-          test -f pokeemerald.gba
-          ls -lh pokeemerald.gba
+          make -j"$(nproc)"
 
-      - name: Verify Flips
+      # Ensure both ROMs exist before patching.
+      - name: Verify ROM files
         run: |
+          test -f tools/pokeemerald/pokeemerald.gba
+          test -f pokeemerald_modern.gba
           test -f flips-linux
-          chmod +x flips-linux
+          ls -lh tools/pokeemerald/pokeemerald.gba
+          ls -lh pokeemerald_modern.gba
 
+      # Generate a patch from vanilla to Elite Redux.
       - name: Create BPS patch
         run: |
+          chmod +x ./flips-linux
           ./flips-linux --create \
-            vanilla-pokeemerald/pokeemerald.gba \
-            pokeemerald.gba \
+            tools/pokeemerald/pokeemerald.gba \
+            pokeemerald_modern.gba \
             EliteRedux.bps
+
           test -f EliteRedux.bps
           ls -lh EliteRedux.bps
 
       - name: Upload BPS file
         uses: actions/upload-artifact@v4
         with:
-          name: EliteRedux-patch
+          name: pokeemerald_patch
           path: EliteRedux.bps
           if-no-files-found: error
