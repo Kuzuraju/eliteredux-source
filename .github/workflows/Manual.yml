@@ -6,12 +6,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Download Repository Files Directly
-        run: |
-          wget https://github.com{{ github.repository }}/archive/refs/heads/upcoming.zip -O repo.zip
-          unzip repo.zip
-          mv eliteredux-source-upcoming/* ./ 2>/dev/null || mv mon-elite-redux-upcoming/* ./ 2>/dev/null || mv *upcoming/* ./ 2>/dev/null
-          rm -f repo.zip
+      - name: Checkout Source Code Clean
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          depth: 1
 
       - name: Install Toolchain Minimal
         run: |
