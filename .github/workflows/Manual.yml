@@ -1,60 +1,85 @@
+
 name: ManualBuild
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     env:
       GAME_VERSION: EMERALD
       GAME_REVISION: 0
       GAME_LANGUAGE: ENGLISH
       MODERN: 0
       COMPARE: 0
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v2
+      - name: Checkout EliteRedux
+        uses: actions/checkout@v4
 
       - name: Checkout agbcc
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
-          path: agbcc
           repository: pret/agbcc
+          path: agbcc
 
-      - name: Install binutils
-        run: sudo apt install gcc-arm-none-eabi binutils-arm-none-eabi
-        # build-essential, git, and libpng-dev are already installed
-        # gcc-arm-none-eabi is only needed for the modern build
-        # as an alternative to dkP
-      - name: Download poryscript
-        run: cd tools && wget https://github.com/huderlem/poryscript/releases/download/3.3.0/poryscript-linux.zip && unzip poryscript-linux.zip -d ./ && rm ./poryscript-linux.zip && mv ./poryscript-linux ./poryscript && ls && cd ..
-        # Downloads poryscript and unzips it
-
-      - name: Install agbcc
+      - name: Install dependencies
         run: |
-          ./build.sh
-          ./install.sh ../
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            libpng-dev \
+            gcc-arm-none-eabi \
+            binutils-arm-none-eabi \
+            unzip \
+            wget
+
+      - name: Download Poryscript
+        run: |
+          cd tools
+          wget -O poryscript.zip \
+            https://github.com/huderlem/poryscript/releases/download/3.3.0/poryscript-linux.zip
+          unzip poryscript.zip
+          rm poryscript.zip
+          mv poryscript-linux poryscript
+
+      - name: Build agbcc
         working-directory: agbcc
+        run: ./build.sh
 
-      - name: Agbcc
-        run: make -j${nproc} all
+      - name: Checkout vanilla pokeemerald
+        run: |
+          git clone https://github.com/pret/pokeemerald.git tools/pokeemerald
 
-      - name: Download pokeemerald repo
-        run: pwd && cd tools && git clone https://github.com/pret/pokeemerald
-        # Clones pokeemerald repo
+      - name: Install agbcc into vanilla pokeemerald
+        run: ./agbcc/install.sh tools/pokeemerald
 
-      - name: Install agbcc to vanilla emerald
-        run: pwd && cd tools && ls && cp -r agbcc pokeemerald/tools/ && cd pokeemerald && pwd
+      - name: Build EliteRedux
+        run: make -j"$(nproc)" all
 
-      - name: Build pokeemerald repo
-        run: pwd && cd tools && cd pokeemerald && pwd && ls && make -j${nproc}
-        # builds agbcc to pokeemerald repo
+      - name: Build vanilla pokeemerald
+        working-directory: tools/pokeemerald
+        run: make -j"$(nproc)"
 
-      - name: Build the patch
-        run: chmod -R 755 ./flips-linux && ls && ./flips-linux --create tools/pokeemerald/pokeemerald.gba pokeemerald.gba EliteRedux.bps
+      - name: Verify ROM files
+        run: |
+          ls -lh pokeemerald.gba
+          ls -lh tools/pokeemerald/pokeemerald.gba
+          ls -lh flips-linux
 
-      - name: Upload bps file
-        uses: actions/upload-artifact@v2
+      - name: Create BPS patch
+        run: |
+          chmod +x ./flips-linux
+          ./flips-linux --create \
+            tools/pokeemerald/pokeemerald.gba \
+            pokeemerald.gba \
+            EliteRedux.bps
+
+      - name: Upload BPS patch
+        uses: actions/upload-artifact@v4
         with:
           name: pokeemerald_patch
           path: EliteRedux.bps
