@@ -22,8 +22,8 @@ jobs:
           mkdir -p tools
           cd tools
           wget https://github.com
-          unzip poryscript-linux.zip
-          mv poryscript-linux poryscript
+          unzip poryscript-windows.zip
+          mv poryscript-windows poryscript
           chmod +x poryscript
           cd ..
 
