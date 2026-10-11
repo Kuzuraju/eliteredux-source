@@ -38,13 +38,13 @@ jobs:
             wget
 
       - name: Download Poryscript
-        run: |
-          cd tools
-          wget -O poryscript.zip \
-            https://github.com/huderlem/poryscript/releases/download/3.3.0/poryscript-linux.zip
-          unzip poryscript.zip
-          rm poryscript.zip
-          mv poryscript-linux poryscript
+  run: |
+    cd tools
+    rm -rf poryscript-linux poryscript poryscript.zip
+    wget -O poryscript.zip https://github.com/huderlem/poryscript/releases/download/3.3.0/poryscript-linux.zip
+    unzip -o poryscript.zip
+    mv poryscript-linux poryscript
+    rm poryscript.zip
 
       - name: Build agbcc
         working-directory: agbcc
