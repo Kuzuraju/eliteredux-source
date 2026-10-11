@@ -16,13 +16,11 @@ jobs:
       COMPARE: 0
 
     steps:
-      # Checkout without automatically fetching the broken submodule.
       - name: Checkout EliteRedux
         uses: actions/checkout@v4
         with:
           submodules: false
 
-      # Fetch the required configuration/protobuf repository directly.
       - name: Checkout proto files
         run: |
           rm -rf proto
@@ -43,36 +41,62 @@ jobs:
             binutils-arm-none-eabi \
             unzip \
             wget \
-            openjdk-17-jdk \
-            kotlin
+            openjdk-17-jdk
 
-      # Download the version used by upstream Elite Redux.
+      - name: Install modern Kotlin compiler
+        run: |
+          KOTLIN_VERSION=2.1.0
+
+          wget -q \
+            "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
+            -O "$RUNNER_TEMP/kotlin.zip"
+
+          mkdir -p "$RUNNER_TEMP/kotlin"
+          unzip -q "$RUNNER_TEMP/kotlin.zip" -d "$RUNNER_TEMP/kotlin"
+
+          echo "$RUNNER_TEMP/kotlin/kotlinc/bin" >> "$GITHUB_PATH"
+
+          "$RUNNER_TEMP/kotlin/kotlinc/bin/kotlinc" -version
+
       - name: Download Poryscript
         run: |
           cd tools
+
           rm -rf poryscript poryscript-linux poryscript-linux.zip
+
           wget -O poryscript-linux.zip \
             https://github.com/huderlem/poryscript/releases/download/3.5.2/poryscript-linux.zip
+
           unzip -o poryscript-linux.zip
           mv poryscript-linux poryscript
+
           rm poryscript-linux.zip
           cd ..
 
-      # Build Elite Redux and its tools.
+      - name: Fix C23 compiler flag
+        run: |
+          sed -i 's/-std=gnu23/-std=gnu2x/g' Makefile
+
+          grep -n -- '-std=gnu2x' Makefile
+
       - name: Build EliteRedux
         run: |
           make -j"$(nproc)"
 
-      # Get the vanilla source repository.
+      - name: Verify EliteRedux ROM
+        run: |
+          test -f pokeemerald_modern.gba
+          ls -lh pokeemerald_modern.gba
+
       - name: Checkout vanilla pokeemerald
         run: |
           git clone https://github.com/pret/pokeemerald.git tools/pokeemerald
 
-      # Build and install agbcc into the vanilla repository.
       - name: Build and install agbcc
         working-directory: tools
         run: |
           git clone https://github.com/pret/agbcc.git
+
           cd agbcc
           ./build.sh
           ./install.sh ../pokeemerald
@@ -82,19 +106,15 @@ jobs:
         run: |
           make -j"$(nproc)"
 
-      # Ensure both ROMs exist before patching.
-      - name: Verify ROM files
+      - name: Verify vanilla ROM
         run: |
           test -f tools/pokeemerald/pokeemerald.gba
-          test -f pokeemerald_modern.gba
-          test -f flips-linux
           ls -lh tools/pokeemerald/pokeemerald.gba
-          ls -lh pokeemerald_modern.gba
 
-      # Generate a patch from vanilla to Elite Redux.
       - name: Create BPS patch
         run: |
           chmod +x ./flips-linux
+
           ./flips-linux --create \
             tools/pokeemerald/pokeemerald.gba \
             pokeemerald_modern.gba \
