@@ -18,8 +18,6 @@ jobs:
     steps:
       - name: Checkout EliteRedux
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Checkout agbcc
         uses: actions/checkout@v4
@@ -43,12 +41,11 @@ jobs:
       - name: Download Poryscript
         run: |
           cd tools
-          rm -rf poryscript-linux poryscript.zip
+          rm -rf poryscript-linux poryscript.zip poryscript
           wget -O poryscript.zip \
             https://github.com/huderlem/poryscript/releases/download/3.3.0/poryscript-linux.zip
           unzip -o poryscript.zip
           rm poryscript.zip
-          rm -rf poryscript
           mv poryscript-linux poryscript
           chmod +x poryscript/poryscript
 
