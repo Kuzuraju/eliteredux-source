@@ -17,9 +17,16 @@ jobs:
           sudo apt update
           sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip git build-essential
 
-      - name: Configure Poryscript Permissions
+      - name: Fetch and Extract Poryscript Native
         run: |
-          chmod +x tools/poryscript
+          mkdir -p tools
+          wget "https://github.com" -O tools/poryscript.zip
+          cd tools
+          unzip poryscript.zip
+          mv poryscript-linux poryscript || true
+          chmod +x poryscript || true
+          rm -f poryscript.zip
+          cd ..
 
       - name: Install AGBCC Compiler
         run: |
