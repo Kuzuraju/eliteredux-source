@@ -15,17 +15,14 @@ jobs:
       - name: Install Toolchain Minimal
         run: |
           sudo apt update
-          sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip git build-essential
+          sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip git build-essential golang-go
 
-      - name: Setup Poryscript Automatique
-        uses: huderlem/setup-poryscript@v1
-        with:
-          version: '3.5.2'
-
-      - name: Link Poryscript to Workspace
+      - name: Compile Poryscript From Source Native
         run: |
           mkdir -p tools
-          ln -s $(which poryscript) tools/poryscript
+          GO111MODULE=on go install ://github.com
+          cp $(go env GOPATH)/bin/poryscript tools/poryscript
+          chmod +x tools/poryscript
 
       - name: Install AGBCC Compiler
         run: |
