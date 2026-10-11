@@ -8,12 +8,12 @@ void CB2_StartSoundCheckMenu(void);
 #define TX_DEBUG_SYSTEM_PUBLIC         FALSE              // Enables the limited public-safe debug rules instead of the full developer debug menu.
 #define TX_DEBUG_SYSTEM_HELD_KEYS      (B_BUTTON)         // The keys required to be held to open the debug menu.
 #define TX_DEBUG_SYSTEM_TRIGGER_EVENT  pressedStartButton // The event that opens the menu when holding the key(s) defined in DEBUG_SYSTEM_HELD_KEYS.
-#define TX_DEBUG_SYSTEM_IN_MENU        FALSE              // Replaces the overworld debug menu button combination with a start menu entry (above Pokédex).
+#define TX_DEBUG_SYSTEM_IN_MENU        TRUE              // Replaces the overworld debug menu button combination with a start menu entry (above Pokédex).
 
 #ifdef DEBUG_BUILD
 #define TX_DEBUG_BUILD_ENABLED TRUE
 #else
-#define TX_DEBUG_BUILD_ENABLED FALSE
+#define TX_DEBUG_BUILD_ENABLED TRUE
 #endif
 
 void Debug_ShowMainMenu(void);
