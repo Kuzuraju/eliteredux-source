@@ -17,11 +17,15 @@ jobs:
           sudo apt update
           sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip git build-essential
 
-      - name: Inject Precompiled Poryscript Binary
+      - name: Setup Poryscript Automatique
+        uses: huderlem/setup-poryscript@v1
+        with:
+          version: '3.5.2'
+
+      - name: Link Poryscript to Workspace
         run: |
           mkdir -p tools
-          wget "https://githubusercontent.com" -O tools/poryscript
-          chmod +x tools/poryscript
+          ln -s $(which poryscript) tools/poryscript
 
       - name: Install AGBCC Compiler
         run: |
