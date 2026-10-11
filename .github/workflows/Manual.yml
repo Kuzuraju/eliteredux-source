@@ -20,7 +20,7 @@ jobs:
       - name: Fetch and Extract Poryscript Native
         run: |
           mkdir -p tools
-          wget "https://github.com" -O tools/poryscript.zip
+          curl -L "https://github.com" -o tools/poryscript.zip
           cd tools
           unzip poryscript.zip
           mv poryscript-linux poryscript || true
