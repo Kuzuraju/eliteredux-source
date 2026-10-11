@@ -6,7 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Source Code Clean
+      - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
           submodules: false
@@ -17,15 +17,9 @@ jobs:
           sudo apt update
           sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip git build-essential
 
-      - name: Setup Poryscript Linux Native
+      - name: Configure Poryscript Permissions
         run: |
-          mkdir -p tools
-          cd tools
-          wget "https://github.com" -O poryscript.zip
-          unzip poryscript.zip
-          mv poryscript-linux poryscript
-          chmod +x poryscript
-          cd ..
+          chmod +x tools/poryscript
 
       - name: Install AGBCC Compiler
         run: |
