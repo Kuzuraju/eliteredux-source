@@ -5,18 +5,22 @@ on: workflow_dispatch
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      GAME_VERSION: EMERALD
+      GAME_REVISION: 0
+      GAME_LANGUAGE: ENGLISH
+      MODERN: 1
+      COMPARE: 0
     steps:
-      - name: Checkout Minimal Code
-        uses: actions/checkout@v4
-        with:
-          submodules: false
-          persist-credentials: false
-          depth: 1
-
-      - name: Free Disk Space & Purge Git Logs
+      - name: Download Raw Workspace (Bypass Git Index)
         run: |
-          rm -rf .git
-          rm -rf .github
+          curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://github.com{{ github.repository }}/archive/refs/heads/upcoming.zip -o repo.zip
+          unzip repo.zip
+          mv eliteredux-source-upcoming/* ./ 2>/dev/null || mv mon-elite-redux-upcoming/* ./ 2>/dev/null || mv *upcoming/* ./ 2>/dev/null
+          rm -f repo.zip
+
+      - name: Free Disk Space
+        run: |
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
