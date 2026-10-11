@@ -12,18 +12,12 @@ jobs:
       MODERN: 0
       COMPARE: 0
     steps:
-      - name: Checkout Code Without Submodules
-        uses: actions/checkout@v4
-        with:
-          submodules: 'false'
-          set-safe-directory: 'true'
-          persist-credentials: false
-
-      - name: Force Purge Submodule Pointers
+      - name: Download Repository Files Directly
         run: |
-          git rm --cached -r tools/er-config || true
-          git rm --cached -r eliteredux-darky || true
-          rm -rf .gitmodules
+          wget https://github.com{{ github.repository }}/archive/refs/heads/upcoming.zip -O repo.zip
+          unzip repo.zip
+          mv eliteredux-source-upcoming/* ./
+          rm -rf eliteredux-source-upcoming repo.zip .git
 
       - name: Install Toolchain
         run: |
