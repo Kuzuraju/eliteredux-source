@@ -12,46 +12,34 @@ jobs:
       MODERN: 0
       COMPARE: 0
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          submodules: false
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    
-
-      - name: Install binutils
-        run: sudo apt update && sudo apt install gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev
-        # build-essential, git, zip, unzip, java, kotlin, and python are already installed
-      - name: Download poryscript
-        run: cd tools && wget https://github.com/huderlem/poryscript/releases/download/3.5.2/poryscript-linux.zip && unzip poryscript-linux.zip -d ./ && rm ./poryscript-linux.zip && mv ./poryscript-linux ./poryscript && ls && cd ..
-        # Downloads poryscript and unzips it
-
-      - name: Build ER
-        run: pwd && make -j${nproc}
-
-      - name: Download pokeemerald repo
-        run: pwd && cd tools && git clone https://github.com/pret/pokeemerald
-        # Clones pokeemerald repo
-
-      - name: Install agbcc
+      - name: Install Toolchain
         run: |
-          pwd
+          sudo apt update
+          sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip
+
+      - name: Setup Poryscript
+        run: |
+          mkdir -p tools
           cd tools
-          git clone https://github.com/pret/agbcc
-          cd agbcc && ./build.sh
-          ./install.sh ../pokeemerald
-          cd ..
-        # Downloads and installs agbcc
+          wget https://github.com
+          unzip poryscript-linux.zip
+          mv poryscript-linux poryscript
+          chmod +x poryscript
 
-      - name: Build pokeemerald repo
-        run: pwd && cd tools && cd pokeemerald && pwd && ls && make -j${nproc}
-        # builds agbcc to pokeemerald repo
+      - name: Precompile Tools
+        run: |
+          make -C tools/preproc
+          make -C tools/gbagfx
+          make -C tools/scaninc
 
-      - name: Build the patch
-        run: chmod -R 755 ./flips-linux && ls && ./flips-linux --create tools/pokeemerald/pokeemerald.gba pokeemerald_modern.gba EliteRedux.bps
+      - name: Build ROM Hack
+        run: make -j$(nproc)
 
-      - name: Upload bps file
-        uses: actions/upload-artifact@v6
+      - name: Upload Finished ROM
+        uses: actions/upload-artifact@v4
         with:
-          name: pokeemerald_patch
-          path: EliteRedux.bps
+          name: EliteRedux-Custom
+          path: "*.gba"
