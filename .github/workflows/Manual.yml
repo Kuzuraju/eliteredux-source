@@ -17,10 +17,10 @@ jobs:
           sudo apt update
           sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip git build-essential
 
-      - name: Secure Local Poryscript Setup
+      - name: Inject Precompiled Poryscript Binary
         run: |
           mkdir -p tools
-          cp poryscript-linux/poryscript tools/poryscript
+          wget "https://githubusercontent.com" -O tools/poryscript
           chmod +x tools/poryscript
 
       - name: Install AGBCC Compiler
