@@ -12,12 +12,11 @@ jobs:
       MODERN: 1
       COMPARE: 0
     steps:
-      - name: Download Raw Workspace (Bypass Git Index)
-        run: |
-          curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://github.com{{ github.repository }}/archive/refs/heads/upcoming.zip -o repo.zip
-          unzip repo.zip
-          mv eliteredux-source-upcoming/* ./ 2>/dev/null || mv mon-elite-redux-upcoming/* ./ 2>/dev/null || mv *upcoming/* ./ 2>/dev/null
-          rm -f repo.zip
+      - name: Checkout Source Code Clean
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          depth: 1
 
       - name: Free Disk Space
         run: |
@@ -28,7 +27,7 @@ jobs:
       - name: Install Compiler Toolchain
         run: |
           sudo apt update
-          sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip build-essential
+          sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip git build-essential
 
       - name: Inject Precompiled Poryscript
         run: |
