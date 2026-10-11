@@ -11,9 +11,19 @@ jobs:
       GAME_LANGUAGE: ENGLISH
       MODERN: 0
       COMPARE: 0
+      GIT_CLONE_PROTECTION_ACTIVE: false
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Force Clean Ghost Submodules
+        run: |
+          rm -rf .gitmodules
+          rm -rf tools/er-config
+          rm -rf .git/modules
 
       - name: Install Toolchain
         run: |
