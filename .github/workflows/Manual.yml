@@ -22,7 +22,7 @@ jobs:
       - name: Install Toolchain
         run: |
           sudo apt update
-          sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip
+          sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip git build-essential
 
       - name: Setup Poryscript
         run: |
@@ -32,6 +32,16 @@ jobs:
           unzip poryscript-linux.zip
           mv poryscript-linux poryscript
           chmod +x poryscript
+          cd ..
+
+      - name: Install AGBCC Compiler
+        run: |
+          cd tools
+          git clone https://github.com
+          cd agbcc
+          ./build.sh
+          ./install.sh ../..
+          cd ../..
 
       - name: Precompile Tools
         run: |
