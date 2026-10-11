@@ -19,6 +19,10 @@ jobs:
           mv eliteredux-source-upcoming/* ./
           rm -rf eliteredux-source-upcoming repo.zip .git
 
+      - name: Auto-Fetch Base Emerald ROM
+        run: |
+          wget "https://archive.org" -O rom.gba
+
       - name: Install Toolchain
         run: |
           sudo apt update
