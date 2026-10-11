@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout EliteRedux
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Checkout agbcc
         uses: actions/checkout@v4
@@ -35,17 +37,20 @@ jobs:
             gcc-arm-none-eabi \
             binutils-arm-none-eabi \
             unzip \
-            wget
+            wget \
+            openjdk-17-jdk
 
       - name: Download Poryscript
         run: |
           cd tools
-          rm -rf poryscript-linux poryscript poryscript.zip
+          rm -rf poryscript-linux poryscript.zip
           wget -O poryscript.zip \
             https://github.com/huderlem/poryscript/releases/download/3.3.0/poryscript-linux.zip
           unzip -o poryscript.zip
-          mv poryscript-linux poryscript
           rm poryscript.zip
+          rm -rf poryscript
+          mv poryscript-linux poryscript
+          chmod +x poryscript/poryscript
 
       - name: Build agbcc
         working-directory: agbcc
@@ -54,39 +59,49 @@ jobs:
 
       - name: Checkout vanilla pokeemerald
         run: |
-          git clone https://github.com/pret/pokeemerald.git tools/pokeemerald
+          git clone https://github.com/pret/pokeemerald.git vanilla-pokeemerald
 
       - name: Install agbcc into vanilla pokeemerald
         working-directory: agbcc
         run: |
-          ./install.sh ../tools/pokeemerald
+          ./install.sh ../vanilla-pokeemerald
+
+      - name: Build vanilla pokeemerald
+        working-directory: vanilla-pokeemerald
+        run: |
+          make -j"$(nproc)"
+
+      - name: Verify vanilla ROM
+        run: |
+          test -f vanilla-pokeemerald/pokeemerald.gba
+          ls -lh vanilla-pokeemerald/pokeemerald.gba
 
       - name: Build EliteRedux
         run: |
           make -j"$(nproc)" all
 
-      - name: Build vanilla pokeemerald
-        working-directory: tools/pokeemerald
+      - name: Verify EliteRedux ROM
         run: |
-          make -j"$(nproc)"
-
-      - name: Verify ROM files
-        run: |
-          echo "Checking generated files..."
+          test -f pokeemerald.gba
           ls -lh pokeemerald.gba
-          ls -lh tools/pokeemerald/pokeemerald.gba
-          ls -lh flips-linux
+
+      - name: Verify Flips
+        run: |
+          test -f flips-linux
+          chmod +x flips-linux
 
       - name: Create BPS patch
         run: |
-          chmod +x ./flips-linux
           ./flips-linux --create \
-            tools/pokeemerald/pokeemerald.gba \
+            vanilla-pokeemerald/pokeemerald.gba \
             pokeemerald.gba \
             EliteRedux.bps
+          test -f EliteRedux.bps
+          ls -lh EliteRedux.bps
 
       - name: Upload BPS file
         uses: actions/upload-artifact@v4
         with:
-          name: pokeemerald_patch
+          name: EliteRedux-patch
           path: EliteRedux.bps
+          if-no-files-found: error
