@@ -5,48 +5,56 @@ on: workflow_dispatch
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      GAME_VERSION: EMERALD
+      GAME_REVISION: 0
+      GAME_LANGUAGE: ENGLISH
+      MODERN: 0
+      COMPARE: 0
     steps:
-      - name: Checkout Minimal Code
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Checkout agbcc
+        uses: actions/checkout@v2
         with:
-          submodules: false
-          depth: 1
+          path: agbcc
+          repository: pret/agbcc
 
-      - name: Create Linux Memory Swap (Anti-OOM)
+      - name: Install binutils
+        run: sudo apt install gcc-arm-none-eabi binutils-arm-none-eabi
+        # build-essential, git, and libpng-dev are already installed
+        # gcc-arm-none-eabi is only needed for the modern build
+        # as an alternative to dkP
+      - name: Download poryscript
+        run: cd tools && wget https://github.com/huderlem/poryscript/releases/download/3.3.0/poryscript-linux.zip && unzip poryscript-linux.zip -d ./ && rm ./poryscript-linux.zip && mv ./poryscript-linux ./poryscript && ls && cd ..
+        # Downloads poryscript and unzips it
+
+      - name: Install agbcc
         run: |
-          sudo swapoff -a
-          sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          ./build.sh
+          ./install.sh ../
+        working-directory: agbcc
 
-      - name: Install Compiler Toolchain
-        run: |
-          sudo apt update
-          sudo apt install -y gcc-arm-none-eabi binutils-arm-none-eabi libpng-dev wget unzip build-essential
+      - name: Agbcc
+        run: make -j${nproc} all
 
-      - name: Inject Precompiled Poryscript
-        run: |
-          mkdir -p tools
-          cd tools
-          wget https://github.com
-          unzip poryscript-linux.zip
-          mv poryscript-linux poryscript
-          chmod +x poryscript
-          cd ..
+      - name: Download pokeemerald repo
+        run: pwd && cd tools && git clone https://github.com/pret/pokeemerald
+        # Clones pokeemerald repo
 
-      - name: Build Internal Tools Native
-        run: |
-          make -C tools/preproc
-          make -C tools/gbagfx
-          make -C tools/scaninc
+      - name: Install agbcc to vanilla emerald
+        run: pwd && cd tools && ls && cp -r agbcc pokeemerald/tools/ && cd pokeemerald && pwd
 
-      - name: Safe Memory Compilation
-        run: |
-          make -j2 MODERN=1
+      - name: Build pokeemerald repo
+        run: pwd && cd tools && cd pokeemerald && pwd && ls && make -j${nproc}
+        # builds agbcc to pokeemerald repo
 
-      - name: Upload Finished GBA File
-        uses: actions/upload-artifact@v4
+      - name: Build the patch
+        run: chmod -R 755 ./flips-linux && ls && ./flips-linux --create tools/pokeemerald/pokeemerald.gba pokeemerald.gba EliteRedux.bps
+
+      - name: Upload bps file
+        uses: actions/upload-artifact@v2
         with:
-          name: EliteRedux-MyVersion
-          path: "*.gba"
+          name: pokeemerald_patch
+          path: EliteRedux.bps
