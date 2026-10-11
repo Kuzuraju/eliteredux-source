@@ -19,9 +19,9 @@ jobs:
           mv eliteredux-source-upcoming/* ./
           rm -rf eliteredux-source-upcoming repo.zip .git
 
-      - name: Auto-Fetch Base Emerald ROM
+      - name: Create Artificial Base ROM
         run: |
-          wget "https://archive.org" -O rom.gba
+          dd if=/dev/zero of=rom.gba bs=1M count=16
 
       - name: Install Toolchain
         run: |
