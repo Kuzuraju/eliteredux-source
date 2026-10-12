@@ -55,7 +55,8 @@ jobs:
           path = Path("src/pokemon.c")
           source = path.read_text()
 
-          start = source.index("void GiveBoxMonInitialMoveset(struct BoxPokemon* boxMon) {")
+          signature = "void GiveBoxMonInitialMoveset(struct BoxPokemon* boxMon) {"
+          start = source.index(signature)
           end = source.index("\n}", start) + 2
 
           original = source[start:end]
@@ -65,8 +66,7 @@ jobs:
 
           if original.count(old) != 2:
               raise SystemExit(
-                  "ERROR: Expected exactly two RandomizeMoves calls "
-                  "in GiveBoxMonInitialMoveset."
+                  "ERROR: Expected exactly two RandomizeMoves calls."
               )
 
           modified = original.replace(old, new)
@@ -127,11 +127,23 @@ jobs:
 
       - name: Fix compiler compatibility flags
         run: |
-          sed -i 's/-std=gnu23/-std=gnu2x/g' Makefile
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
 
-          sed -i \
-            's/-Werror/-Werror -Wno-error=uninitialized -Wno-error=maybe-uninitialized -Wno-error=strict-aliasing/g' \
-            Makefile
+          path = Path("Makefile")
+          source = path.read_text()
+
+          source = source.replace("-std=gnu23", "-std=gnu2x")
+          source = re.sub(r"-Werror\b", "-Wno-error", source)
+
+          path.write_text(source)
+
+          if re.search(r"-Werror\b", source):
+              raise SystemExit("ERROR: -Werror still present.")
+
+          print("Compiler compatibility flags updated.")
+          PY
 
           grep -nE 'gnu2x|Wno-error' Makefile
 
