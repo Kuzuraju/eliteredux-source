@@ -1,4 +1,5 @@
 
+
 name: ManualBuild
 
 on:
@@ -63,9 +64,28 @@ jobs:
             wget \
             openjdk-17-jdk
 
+      - name: Diagnose Pokemon creation build
+        run: |
+          echo "=== Compiler versions ==="
+          gcc --version | head -1
+          arm-none-eabi-gcc --version | head -1
+
+          echo "=== Pokemon move initialization ==="
+          sed -n '1060,1160p' src/pokemon.c
+
+          echo "=== Pokemon creation ==="
+          sed -n '390,570p' src/pokemon.c
+
+          echo "=== Compiler flags ==="
+          grep -nE 'Werror|fstrict-aliasing|fno-strict-aliasing|OPT|CFLAGS' Makefile | head -70 || true
+
+          echo "=== Move-related functions ==="
+          grep -nE 'GiveBoxMonInitialMoveset|GiveMoveToBoxMon|SetMonMoveSlot|CreateBoxMon' src/pokemon.c || true
+
       - name: Install modern Kotlin compiler
         run: |
           KOTLIN_VERSION=2.1.0
+
           wget -q \
             "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
             -O "$RUNNER_TEMP/kotlin.zip"
