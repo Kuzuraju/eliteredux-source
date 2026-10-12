@@ -21,12 +21,19 @@ jobs:
         with:
           submodules: false
 
+      - name: Check base ROM
+        run: |
+          test -f rom.gba || {
+            echo "ERROR: rom.gba was not found in the repository root."
+            exit 1
+          }
+          ls -lh rom.gba
+
       - name: Checkout proto files
         run: |
           rm -rf proto
           git clone --depth 1 --branch upcoming \
             https://github.com/Elite-Redux/er-config.git proto
-
           test -d proto
           find proto -type f \( -name '*.proto' -o -name '*.textproto' \) | head -20
 
@@ -46,30 +53,22 @@ jobs:
       - name: Install modern Kotlin compiler
         run: |
           KOTLIN_VERSION=2.1.0
-
           wget -q \
             "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
             -O "$RUNNER_TEMP/kotlin.zip"
-
           mkdir -p "$RUNNER_TEMP/kotlin"
           unzip -q "$RUNNER_TEMP/kotlin.zip" -d "$RUNNER_TEMP/kotlin"
-
           echo "$RUNNER_TEMP/kotlin/kotlinc/bin" >> "$GITHUB_PATH"
-
           "$RUNNER_TEMP/kotlin/kotlinc/bin/kotlinc" -version
 
       - name: Download Poryscript
         run: |
           cd tools
-
           rm -rf poryscript poryscript-linux poryscript-linux.zip
-
           wget -O poryscript-linux.zip \
             https://github.com/huderlem/poryscript/releases/download/3.5.2/poryscript-linux.zip
-
           unzip -o poryscript-linux.zip
           mv poryscript-linux poryscript
-
           rm poryscript-linux.zip
           cd ..
 
@@ -88,44 +87,30 @@ jobs:
           test -f pokeemerald_modern.gba
           ls -lh pokeemerald_modern.gba
 
-      - name: Checkout vanilla pokeemerald
-        run: |
-          git clone https://github.com/pret/pokeemerald.git tools/pokeemerald
-
-      - name: Build and install agbcc
-        working-directory: tools
-        run: |
-          git clone https://github.com/pret/agbcc.git
-
-          cd agbcc
-          ./build.sh
-          ./install.sh ../pokeemerald
-
-      - name: Build vanilla pokeemerald
-        working-directory: tools/pokeemerald
-        run: |
-          make -j"$(nproc)"
-
-      - name: Verify vanilla ROM
-        run: |
-          test -f tools/pokeemerald/pokeemerald.gba
-          ls -lh tools/pokeemerald/pokeemerald.gba
-
-      - name: Create BPS patch
+      - name: Create BPS patch from rom.gba
         run: |
           chmod +x ./flips-linux
-
           ./flips-linux --create \
-            tools/pokeemerald/pokeemerald.gba \
+            rom.gba \
             pokeemerald_modern.gba \
             EliteRedux.bps
-
           test -f EliteRedux.bps
           ls -lh EliteRedux.bps
 
-      - name: Upload BPS file
+      - name: Apply patch to rom.gba
+        run: |
+          ./flips-linux --apply \
+            EliteRedux.bps \
+            rom.gba \
+            EliteRedux.gba
+          test -f EliteRedux.gba
+          ls -lh EliteRedux.gba
+
+      - name: Upload patch and patched ROM
         uses: actions/upload-artifact@v4
         with:
-          name: pokeemerald_patch
-          path: EliteRedux.bps
+          name: EliteRedux-build
+          path: |
+            EliteRedux.bps
+            EliteRedux.gba
           if-no-files-found: error
