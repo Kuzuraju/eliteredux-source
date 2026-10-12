@@ -36,7 +36,12 @@ jobs:
             https://github.com/Elite-Redux/er-config.git proto
           test -d proto
           find proto -type f \( -name '*.proto' -o -name '*.textproto' \) | head -20
-
+          
+       - name: Enable overworld debug shortcut
+         run: |
+          sed -i -E 's/^(#define TX_DEBUG_SYSTEM_IN_MENU[[:space:]]+)TRUE/\1FALSE/' include/debug.h
+          grep -n 'TX_DEBUG_SYSTEM_' include/debug.h
+          
       - name: Install dependencies
         run: |
           sudo apt-get update
