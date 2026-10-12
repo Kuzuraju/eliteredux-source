@@ -36,12 +36,20 @@ jobs:
             https://github.com/Elite-Redux/er-config.git proto
           test -d proto
           find proto -type f \( -name '*.proto' -o -name '*.textproto' \) | head -20
-          
-       - name: Enable overworld debug shortcut
-         run: |
-          sed -i -E 's/^(#define TX_DEBUG_SYSTEM_IN_MENU[[:space:]]+)TRUE/\1FALSE/' include/debug.h
+
+      - name: Enable overworld debug shortcut
+        run: |
+          sed -i -E \
+            's/^(#define TX_DEBUG_SYSTEM_IN_MENU[[:space:]]+)TRUE/\1FALSE/' \
+            include/debug.h
+
+          echo "Debug configuration:"
           grep -n 'TX_DEBUG_SYSTEM_' include/debug.h
-          
+
+          grep -Eq \
+            '^#define TX_DEBUG_SYSTEM_IN_MENU[[:space:]]+FALSE' \
+            include/debug.h
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -61,26 +69,36 @@ jobs:
           wget -q \
             "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
             -O "$RUNNER_TEMP/kotlin.zip"
+
           mkdir -p "$RUNNER_TEMP/kotlin"
           unzip -q "$RUNNER_TEMP/kotlin.zip" -d "$RUNNER_TEMP/kotlin"
+
           echo "$RUNNER_TEMP/kotlin/kotlinc/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/kotlin/kotlinc/bin/kotlinc" -version
 
       - name: Download Poryscript
         run: |
           cd tools
+
           rm -rf poryscript poryscript-linux poryscript-linux.zip
+
           wget -O poryscript-linux.zip \
             https://github.com/huderlem/poryscript/releases/download/3.5.2/poryscript-linux.zip
+
           unzip -o poryscript-linux.zip
           mv poryscript-linux poryscript
           rm poryscript-linux.zip
+
           cd ..
 
       - name: Fix compiler compatibility flags
         run: |
           sed -i 's/-std=gnu23/-std=gnu2x/g' Makefile
-          sed -i 's/-Werror/-Werror -Wno-error=uninitialized -Wno-error=maybe-uninitialized -Wno-error=strict-aliasing/g' Makefile
+
+          sed -i \
+            's/-Werror/-Werror -Wno-error=uninitialized -Wno-error=maybe-uninitialized -Wno-error=strict-aliasing/g' \
+            Makefile
+
           grep -nE 'gnu2x|Wno-error' Makefile
 
       - name: Build EliteRedux
@@ -95,10 +113,12 @@ jobs:
       - name: Create BPS patch from rom.gba
         run: |
           chmod +x ./flips-linux
+
           ./flips-linux --create \
             rom.gba \
             pokeemerald_modern.gba \
             EliteRedux.bps
+
           test -f EliteRedux.bps
           ls -lh EliteRedux.bps
 
@@ -108,8 +128,14 @@ jobs:
             EliteRedux.bps \
             rom.gba \
             EliteRedux.gba
+
           test -f EliteRedux.gba
           ls -lh EliteRedux.gba
+
+      - name: Verify patched ROM
+        run: |
+          cmp pokeemerald_modern.gba EliteRedux.gba
+          echo "Patched ROM matches the compiled EliteRedux ROM."
 
       - name: Upload patch and patched ROM
         uses: actions/upload-artifact@v4
