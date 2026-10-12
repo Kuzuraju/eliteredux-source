@@ -1,5 +1,4 @@
 
-
 name: ManualBuild
 
 on:
@@ -35,8 +34,8 @@ jobs:
           rm -rf proto
           git clone --depth 1 --branch upcoming \
             https://github.com/Elite-Redux/er-config.git proto
+
           test -d proto
-          find proto -type f \( -name '*.proto' -o -name '*.textproto' \) | head -20
 
       - name: Enable overworld debug shortcut
         run: |
@@ -44,12 +43,40 @@ jobs:
             's/^(#define TX_DEBUG_SYSTEM_IN_MENU[[:space:]]+)TRUE/\1FALSE/' \
             include/debug.h
 
-          echo "Debug configuration:"
-          grep -n 'TX_DEBUG_SYSTEM_' include/debug.h
-
           grep -Eq \
             '^#define TX_DEBUG_SYSTEM_IN_MENU[[:space:]]+FALSE' \
             include/debug.h
+
+      - name: Test fix for initial Pokemon moves
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/pokemon.c")
+          source = path.read_text()
+
+          start = source.index("void GiveBoxMonInitialMoveset(struct BoxPokemon* boxMon) {")
+          end = source.index("\n}", start) + 2
+
+          original = source[start:end]
+
+          old = "RandomizeMoves(gLevelUpLearnsets[species][i].move, species, personality)"
+          new = "gLevelUpLearnsets[species][i].move"
+
+          if original.count(old) != 2:
+              raise SystemExit(
+                  "ERROR: Expected exactly two RandomizeMoves calls "
+                  "in GiveBoxMonInitialMoveset."
+              )
+
+          modified = original.replace(old, new)
+          source = source[:start] + modified + source[end:]
+
+          path.write_text(source)
+
+          print("Initial moveset test patch applied.")
+          print(modified)
+          PY
 
       - name: Install dependencies
         run: |
@@ -64,24 +91,6 @@ jobs:
             wget \
             openjdk-17-jdk
 
-      - name: Diagnose Pokemon creation build
-        run: |
-          echo "=== Compiler versions ==="
-          gcc --version | head -1
-          arm-none-eabi-gcc --version | head -1
-
-          echo "=== Pokemon move initialization ==="
-          sed -n '1060,1160p' src/pokemon.c
-
-          echo "=== Pokemon creation ==="
-          sed -n '390,570p' src/pokemon.c
-
-          echo "=== Compiler flags ==="
-          grep -nE 'Werror|fstrict-aliasing|fno-strict-aliasing|OPT|CFLAGS' Makefile | head -70 || true
-
-          echo "=== Move-related functions ==="
-          grep -nE 'GiveBoxMonInitialMoveset|GiveMoveToBoxMon|SetMonMoveSlot|CreateBoxMon' src/pokemon.c || true
-
       - name: Install modern Kotlin compiler
         run: |
           KOTLIN_VERSION=2.1.0
@@ -91,9 +100,12 @@ jobs:
             -O "$RUNNER_TEMP/kotlin.zip"
 
           mkdir -p "$RUNNER_TEMP/kotlin"
-          unzip -q "$RUNNER_TEMP/kotlin.zip" -d "$RUNNER_TEMP/kotlin"
+
+          unzip -q "$RUNNER_TEMP/kotlin.zip" \
+            -d "$RUNNER_TEMP/kotlin"
 
           echo "$RUNNER_TEMP/kotlin/kotlinc/bin" >> "$GITHUB_PATH"
+
           "$RUNNER_TEMP/kotlin/kotlinc/bin/kotlinc" -version
 
       - name: Download Poryscript
@@ -106,7 +118,9 @@ jobs:
             https://github.com/huderlem/poryscript/releases/download/3.5.2/poryscript-linux.zip
 
           unzip -o poryscript-linux.zip
+
           mv poryscript-linux poryscript
+
           rm poryscript-linux.zip
 
           cd ..
@@ -155,7 +169,8 @@ jobs:
       - name: Verify patched ROM
         run: |
           cmp pokeemerald_modern.gba EliteRedux.gba
-          echo "Patched ROM matches the compiled EliteRedux ROM."
+
+          echo "Patched ROM matches compiled ROM."
 
       - name: Upload patch and patched ROM
         uses: actions/upload-artifact@v4
