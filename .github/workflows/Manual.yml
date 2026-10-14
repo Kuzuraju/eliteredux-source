@@ -42,25 +42,51 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          old = "Sparkling Blast"
-          new = "SparklBlast"
+          old_name = "Sparkling Blast"
+          new_short_name = "SparklBlast"
+
+          if len(new_short_name) > 13:
+              raise SystemExit("ERROR: Short name exceeds 13 characters.")
 
           modified = []
 
           for path in Path("proto").rglob("*.textproto"):
               content = path.read_text()
 
-              if old in content:
-                  path.write_text(content.replace(old, new))
+              if old_name not in content:
+                  continue
+
+              lines = content.splitlines(keepends=True)
+              changed = False
+
+              for i, line in enumerate(lines):
+                  if re.match(
+                      r'^\s*name:\s*"Sparkling Blast"\s*$',
+                      line.strip()
+                  ):
+                      for j in range(i + 1, min(i + 20, len(lines))):
+                          if re.match(r'^\s*short_name:\s*".*?"', lines[j]):
+                              lines[j] = re.sub(
+                                  r'(short_name:\s*")[^"]*(")',
+                                  lambda m: m.group(1) + new_short_name + m.group(2),
+                                  lines[j],
+                                  count=1
+                              )
+                              changed = True
+                              break
+
+              if changed:
+                  path.write_text("".join(lines))
                   modified.append(str(path))
 
           if not modified:
               raise SystemExit(
-                  "ERROR: Sparkling Blast was not found in proto files."
+                  "ERROR: Could not find Sparkling Blast short_name."
               )
 
-          print("Updated files:")
+          print("Updated short_name in:")
           for path in modified:
               print(path)
           PY
