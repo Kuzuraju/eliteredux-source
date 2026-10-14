@@ -149,47 +149,28 @@ jobs:
 
           grep -nE 'gnu2x|Wno-error' Makefile
 
-      - name: Diagnose missing legendary sage header
+      - name: Generate code before parallel compilation
         run: |
-          {
-            echo "=== Source revision ==="
-            git log -1 --format='%h %s'
+          echo "=== Generating Elite Redux code ==="
 
-            echo
-            echo "=== Missing header references ==="
-            git grep -n 'legendary_sage.h' || true
+          make -C tools/codegen
 
-            echo
-            echo "=== Generated mega files ==="
-            ls -la include/generated/data/megas/ || true
-            ls -la generated/data/megas/ || true
+          echo "=== Checking generated files ==="
 
-            echo
-            echo "=== Search for legendary sage ==="
-            find . -iname '*legendary*sage*' -print | head -60
+          test -f include/generated/data/megas/legendary_sage.h || {
+            echo "ERROR: legendary_sage.h was not generated."
+            echo "Checking generated directory:"
+            find include/generated -maxdepth 5 -type f \
+              2>/dev/null | head -80 || true
+            exit 1
+          }
 
-            echo
-            echo "=== Config revision ==="
-            git -C proto log -1 --format='%h %s'
+          test -f include/generated/data/megas/adoption_center.h || {
+            echo "ERROR: adoption_center.h was not generated."
+            exit 1
+          }
 
-            echo
-            echo "=== Config references ==="
-            git -C proto grep -n 'legendary_sage' | head -40 || true
-
-            echo
-            echo "=== Relevant include files ==="
-            sed -n '1,70p' include/constants/items.h
-
-            echo
-            echo "=== Generation references ==="
-            grep -RIn \
-              --exclude-dir=.git \
-              --exclude-dir=build \
-              --exclude='*.gba' \
-              'generated/data/megas' \
-              Makefile scripts tools 2>/dev/null | head -60 || true
-
-          } 2>&1 | tee legendary_sage_diagnostic.txt
+          echo "Required generated headers are present."
 
       - name: Build EliteRedux
         run: |
@@ -227,14 +208,6 @@ jobs:
           cmp pokeemerald_modern.gba EliteRedux.gba
 
           echo "Patched ROM matches compiled ROM."
-
-      - name: Upload diagnostic
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: EliteRedux-diagnostic
-          path: legendary_sage_diagnostic.txt
-          if-no-files-found: warn
 
       - name: Upload patch and patched ROM
         uses: actions/upload-artifact@v4
