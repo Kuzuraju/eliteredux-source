@@ -44,7 +44,7 @@ jobs:
           from pathlib import Path
 
           old = "Sparkling Blast"
-          new = "SparklngBlast"
+          new = "SparklBlast"
 
           modified = []
 
@@ -210,4 +210,3 @@ jobs:
             EliteRedux.bps
             EliteRedux.gba
           if-no-files-found: error
-
