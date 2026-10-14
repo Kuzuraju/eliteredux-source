@@ -38,6 +38,33 @@ jobs:
 
           test -d proto
 
+      - name: Fix Sparkling Blast short name
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          old = "Sparkling Blast"
+          new = "SparklngBlast"
+
+          modified = []
+
+          for path in Path("proto").rglob("*.textproto"):
+              content = path.read_text()
+
+              if old in content:
+                  path.write_text(content.replace(old, new))
+                  modified.append(str(path))
+
+          if not modified:
+              raise SystemExit(
+                  "ERROR: Sparkling Blast was not found in proto files."
+              )
+
+          print("Updated files:")
+          for path in modified:
+              print(path)
+          PY
+
       - name: Enable overworld debug shortcut
         run: |
           sed -i -E \
@@ -47,37 +74,6 @@ jobs:
           grep -Eq \
             '^#define TX_DEBUG_SYSTEM_IN_MENU[[:space:]]+FALSE' \
             include/debug.h
-
-      - name: Test fix for initial Pokemon moves
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("src/pokemon.c")
-          source = path.read_text()
-
-          signature = "void GiveBoxMonInitialMoveset(struct BoxPokemon* boxMon) {"
-          start = source.index(signature)
-          end = source.index("\n}", start) + 2
-
-          original = source[start:end]
-
-          old = "RandomizeMoves(gLevelUpLearnsets[species][i].move, species, personality)"
-          new = "gLevelUpLearnsets[species][i].move"
-
-          if original.count(old) != 2:
-              raise SystemExit(
-                  "ERROR: Expected exactly two RandomizeMoves calls."
-              )
-
-          modified = original.replace(old, new)
-          source = source[:start] + modified + source[end:]
-
-          path.write_text(source)
-
-          print("Initial moveset test patch applied.")
-          print(modified)
-          PY
 
       - name: Install dependencies
         run: |
@@ -159,9 +155,6 @@ jobs:
 
           test -f include/generated/data/megas/legendary_sage.h || {
             echo "ERROR: legendary_sage.h was not generated."
-            echo "Checking generated directory:"
-            find include/generated -maxdepth 5 -type f \
-              2>/dev/null | head -80 || true
             exit 1
           }
 
@@ -217,3 +210,4 @@ jobs:
             EliteRedux.bps
             EliteRedux.gba
           if-no-files-found: error
+
