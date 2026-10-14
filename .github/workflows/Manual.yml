@@ -38,57 +38,82 @@ jobs:
 
           test -d proto
 
-      - name: Fix Sparkling Blast short name
+      - name: Fix Sparkling Blast data
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          old_name = "Sparkling Blast"
           new_short_name = "SparklBlast"
-
-          if len(new_short_name) > 13:
-              raise SystemExit("ERROR: Short name exceeds 13 characters.")
+          new_description = (
+              "A sparkling beam\\n"
+              "that irritates the\\n"
+              "foe's eyes.\\n"
+              "Light-based."
+          )
 
           modified = []
+          short_name_fixed = False
+          description_fixed = False
 
           for path in Path("proto").rglob("*.textproto"):
               content = path.read_text()
 
-              if old_name not in content:
+              if "Sparkling Blast" not in content:
                   continue
 
               lines = content.splitlines(keepends=True)
               changed = False
 
               for i, line in enumerate(lines):
-                  if re.match(
+                  if not re.match(
                       r'^\s*name:\s*"Sparkling Blast"\s*$',
                       line.strip()
                   ):
-                      for j in range(i + 1, min(i + 20, len(lines))):
-                          if re.match(r'^\s*short_name:\s*".*?"', lines[j]):
-                              lines[j] = re.sub(
-                                  r'(short_name:\s*")[^"]*(")',
-                                  lambda m: m.group(1) + new_short_name + m.group(2),
-                                  lines[j],
-                                  count=1
-                              )
-                              changed = True
-                              break
+                      continue
+
+                  for j in range(i + 1, min(i + 25, len(lines))):
+                      if re.match(r'^\s*short_name:\s*"', lines[j]):
+                          lines[j] = re.sub(
+                              r'(short_name:\s*")[^"]*(")',
+                              lambda m: m.group(1) + new_short_name + m.group(2),
+                              lines[j],
+                              count=1
+                          )
+                          short_name_fixed = True
+                          changed = True
+
+                      if re.match(r'^\s*description:\s*"', lines[j]):
+                          lines[j] = re.sub(
+                              r'(description:\s*")[^"]*(")',
+                              lambda m: m.group(1) + new_description + m.group(2),
+                              lines[j],
+                              count=1
+                          )
+                          description_fixed = True
+                          changed = True
+
+                  break
 
               if changed:
                   path.write_text("".join(lines))
                   modified.append(str(path))
 
-          if not modified:
+          if not short_name_fixed:
               raise SystemExit(
-                  "ERROR: Could not find Sparkling Blast short_name."
+                  "ERROR: Sparkling Blast short_name was not found."
               )
 
-          print("Updated short_name in:")
+          if not description_fixed:
+              raise SystemExit(
+                  "ERROR: Sparkling Blast description was not found."
+              )
+
+          print("Updated files:")
           for path in modified:
               print(path)
+
+          print("Sparkling Blast data corrected.")
           PY
 
       - name: Enable overworld debug shortcut
@@ -236,3 +261,4 @@ jobs:
             EliteRedux.bps
             EliteRedux.gba
           if-no-files-found: error
+
