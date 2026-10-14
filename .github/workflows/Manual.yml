@@ -38,23 +38,25 @@ jobs:
 
           test -d proto
 
-      - name: Fix Sparkling Blast data
+      - name: Diagnose Sparkling Blast description
+        run: |
+          echo "=== Finding Sparkling Blast ==="
+          grep -Rn -B 12 -A 12 "Sparkling Blast" proto || true
+
+          echo "=== Finding original description ==="
+          grep -Rn -B 12 -A 12 "A beam that sparkles" proto || true
+
+          echo "=== Finding description fields ==="
+          grep -Rn -B 5 -A 15 "opponent's eyes" proto || true
+
+      - name: Fix Sparkling Blast short name
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
 
           new_short_name = "SparklBlast"
-          new_description = (
-              "A sparkling beam\\n"
-              "that irritates the\\n"
-              "foe's eyes.\\n"
-              "Light-based."
-          )
-
           modified = []
-          short_name_fixed = False
-          description_fixed = False
 
           for path in Path("proto").rglob("*.textproto"):
               content = path.read_text()
@@ -80,18 +82,8 @@ jobs:
                               lines[j],
                               count=1
                           )
-                          short_name_fixed = True
                           changed = True
-
-                      if re.match(r'^\s*description:\s*"', lines[j]):
-                          lines[j] = re.sub(
-                              r'(description:\s*")[^"]*(")',
-                              lambda m: m.group(1) + new_description + m.group(2),
-                              lines[j],
-                              count=1
-                          )
-                          description_fixed = True
-                          changed = True
+                          break
 
                   break
 
@@ -99,21 +91,14 @@ jobs:
                   path.write_text("".join(lines))
                   modified.append(str(path))
 
-          if not short_name_fixed:
+          if not modified:
               raise SystemExit(
                   "ERROR: Sparkling Blast short_name was not found."
               )
 
-          if not description_fixed:
-              raise SystemExit(
-                  "ERROR: Sparkling Blast description was not found."
-              )
-
-          print("Updated files:")
+          print("Updated short_name in:")
           for path in modified:
               print(path)
-
-          print("Sparkling Blast data corrected.")
           PY
 
       - name: Enable overworld debug shortcut
@@ -261,4 +246,3 @@ jobs:
             EliteRedux.bps
             EliteRedux.gba
           if-no-files-found: error
-
