@@ -32,6 +32,7 @@ jobs:
       - name: Checkout proto files
         run: |
           rm -rf proto
+
           git clone --depth 1 --branch upcoming \
             https://github.com/Elite-Redux/er-config.git proto
 
@@ -81,6 +82,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
             build-essential \
             git \
@@ -147,6 +149,48 @@ jobs:
 
           grep -nE 'gnu2x|Wno-error' Makefile
 
+      - name: Diagnose missing legendary sage header
+        run: |
+          {
+            echo "=== Source revision ==="
+            git log -1 --format='%h %s'
+
+            echo
+            echo "=== Missing header references ==="
+            git grep -n 'legendary_sage.h' || true
+
+            echo
+            echo "=== Generated mega files ==="
+            ls -la include/generated/data/megas/ || true
+            ls -la generated/data/megas/ || true
+
+            echo
+            echo "=== Search for legendary sage ==="
+            find . -iname '*legendary*sage*' -print | head -60
+
+            echo
+            echo "=== Config revision ==="
+            git -C proto log -1 --format='%h %s'
+
+            echo
+            echo "=== Config references ==="
+            git -C proto grep -n 'legendary_sage' | head -40 || true
+
+            echo
+            echo "=== Relevant include files ==="
+            sed -n '1,70p' include/constants/items.h
+
+            echo
+            echo "=== Generation references ==="
+            grep -RIn \
+              --exclude-dir=.git \
+              --exclude-dir=build \
+              --exclude='*.gba' \
+              'generated/data/megas' \
+              Makefile scripts tools 2>/dev/null | head -60 || true
+
+          } 2>&1 | tee legendary_sage_diagnostic.txt
+
       - name: Build EliteRedux
         run: |
           make -j"$(nproc)"
@@ -183,6 +227,14 @@ jobs:
           cmp pokeemerald_modern.gba EliteRedux.gba
 
           echo "Patched ROM matches compiled ROM."
+
+      - name: Upload diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: EliteRedux-diagnostic
+          path: legendary_sage_diagnostic.txt
+          if-no-files-found: warn
 
       - name: Upload patch and patched ROM
         uses: actions/upload-artifact@v4
