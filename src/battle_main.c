@@ -1726,7 +1726,26 @@ static void sub_8038538(struct Sprite* sprite) {
     }
 }
 
+// Deterministic per trainer, slot and difficulty; never consumes battle RNG.
+static SpeciesEnum GetPrototypeTrainerSpecies(u16 trainerNum, u8 slot, u8 difficulty, SpeciesEnum original)
+{
+    u32 seed = VarGet(VAR_RANDOMIZED_SEED);
+    u16 attempt;
+    if (!seed) return original;
+    seed ^= (u32)trainerNum * 0x9E3779B9u;
+    seed ^= (u32)(slot + 1) * 0x85EBCA6Bu;
+    seed ^= (u32)(difficulty + 1) * 0xC2B2AE35u;
+    if (!seed) seed = 1;
+    for (attempt = 0; attempt < 512; attempt++) {
+        SpeciesEnum candidate = RandRangeDeterministic(1, REAL_SPECIES_COUNT - 1, &seed);
+        if (IsSpeciesRandomizerAllowed(candidate, FALSE, TRUE)) return candidate;
+    }
+    return original;
+}
+
 static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 firstTrainer) {
+    bool8 prototypeRandomized = FALSE;
+
     u32 nameHash = 0;
     u32 personalityValue;
     s32 i, j = 0;
@@ -1832,16 +1851,23 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
             if (FlagGet(FLAG_DEBUG_GODMODE)) level = 1;
 #endif
 
-            if (trainerNum == TRAINER_OLDPLAYER) {
-                species = Random() % 500;
-                CreateMon(&party[i], species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
-            } else
-                CreateMon(&party[i], partyData[i].species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
+            prototypeRandomized = FALSE;
+    if (trainerNum == TRAINER_OLDPLAYER) {
+        species = Random() % 500;
+        CreateMon(&party[i], species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
+    } else {
+        species = partyData[i].species;
+        if (gSaveBlock2Ptr->trainerRandomizedMode) {
+            species = GetPrototypeTrainerSpecies(trainerNum, i, gSaveBlock2Ptr->gameDifficulty, species);
+            prototypeRandomized = (species != partyData[i].species);
+        }
+        CreateMon(&party[i], species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
+    }
 
             // Sets Pokemon Nature
             SetMonData(&party[i], MON_DATA_NATURE, &partyData[i].nature);
 
-            SetMonData(&party[i], MON_DATA_HELD_ITEM, &partyData[i].heldItem);
+            if (!prototypeRandomized) SetMonData(&party[i], MON_DATA_HELD_ITEM, &partyData[i].heldItem);
 
             SetMonData(&party[i], MON_DATA_SPEED_DOWN, &partyData[i].zeroSpeedIvs);
 
@@ -1853,7 +1879,7 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
             if (FlagGet(FLAG_SYS_AUTOWIN)) SetTrainerFlag(trainerNum);
 #endif
 
-            SetMonData(&party[i], MON_DATA_ABILITY_NUM, &partyData[i].ability);
+            if (!prototypeRandomized) SetMonData(&party[i], MON_DATA_ABILITY_NUM, &partyData[i].ability);
 
             // Sets EVs to fully customized spreads if difficulty is Hard or higher
             if (difficultySetting > DIFFICULTY_EASY) {
@@ -1883,7 +1909,7 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
 
             CalculateEnemyTrainerMonStats(&party[i]);
 
-            if (trainerNum == TRAINER_OLDPLAYER) {
+            if (trainerNum == TRAINER_OLDPLAYER || prototypeRandomized) {
                 for (j = 0; j < MAX_MON_MOVES; j++) {
                     move = selectMoves(species, j, GetMonData(&party[i], MON_DATA_ATK, NULL), GetMonData(&party[i], MON_DATA_SPATK, NULL));
                     SetMonData(&party[i], MON_DATA_MOVE1 + j, &move);

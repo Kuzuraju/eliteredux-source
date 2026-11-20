@@ -55,6 +55,7 @@ enum{
     SETTING_LEVEL_CAP,
     SETTING_BOSS_RUSH,
     SETTING_RANDOMIZER_MODE,
+    SETTING_TRAINER_RANDOMIZER_MODE,
     SETTING_RANDOMIZER_ABILITY_MODE,
     SETTING_RANDOMIZER_INNATE_MODE,
     SETTING_RANDOMIZER_MOVE_MODE,
@@ -181,7 +182,12 @@ static void SaveOptionsData()
         gSaveBlock2Ptr->encounterRandomizedMode = FALSE;
         gSaveBlock2Ptr->encounterRandomizedLegendaryMode = TRUE;
     }
-    gSaveBlock2Ptr->innaterandomizedMode    = sMenuDataPtr->temporal_settings[SETTING_RANDOMIZER_INNATE_MODE];
+    gSaveBlock2Ptr->trainerRandomizedMode = sMenuDataPtr->temporal_settings[SETTING_TRAINER_RANDOMIZER_MODE];
+    if (gSaveBlock2Ptr->trainerRandomizedMode && VarGet(VAR_RANDOMIZED_SEED) == 0) {
+        u16 trainerSeed = Random();
+        VarSet(VAR_RANDOMIZED_SEED, trainerSeed ? trainerSeed : 1);
+    }
+    gSaveBlock2Ptr->innaterandomizedMode = sMenuDataPtr->temporal_settings[SETTING_RANDOMIZER_INNATE_MODE];
     gSaveBlock2Ptr->abilityRandomizedMode   = sMenuDataPtr->temporal_settings[SETTING_RANDOMIZER_ABILITY_MODE];
     gSaveBlock2Ptr->individualColors        = sMenuDataPtr->temporal_settings[SETTING_INDIVIDUAL_COLORS];
     gSaveBlock2Ptr->moveRandomizedMode      = sMenuDataPtr->temporal_settings[SETTING_RANDOMIZER_MOVE_MODE];
@@ -207,7 +213,8 @@ static void LoadOptionsData()
     else {
         sMenuDataPtr->temporal_settings[SETTING_RANDOMIZER_MODE] = 3;
     }
-    sMenuDataPtr->temporal_settings[SETTING_RANDOMIZER_INNATE_MODE]  = gSaveBlock2Ptr->innaterandomizedMode;
+    sMenuDataPtr->temporal_settings[SETTING_TRAINER_RANDOMIZER_MODE] = gSaveBlock2Ptr->trainerRandomizedMode;
+    sMenuDataPtr->temporal_settings[SETTING_RANDOMIZER_INNATE_MODE] = gSaveBlock2Ptr->innaterandomizedMode;
     sMenuDataPtr->temporal_settings[SETTING_RANDOMIZER_ABILITY_MODE] = gSaveBlock2Ptr->abilityRandomizedMode;
     sMenuDataPtr->temporal_settings[SETTING_INDIVIDUAL_COLORS]       = gSaveBlock2Ptr->individualColors;
     sMenuDataPtr->temporal_settings[SETTING_RANDOMIZER_MOVE_MODE]    = gSaveBlock2Ptr->moveRandomizedMode;
@@ -535,6 +542,17 @@ const struct OptionData Intro_Options[NUM_INTRO_OPTIONS] = {
             _("Wild Encounters will have a weighted\nrandomization. You will encounter Pokémon\nbased on the area you are in.")
             },
         .numOptions = 4,
+    },
+
+    [SETTING_TRAINER_RANDOMIZER_MODE] =
+    {
+        .title = _("Trainer Randomizer"),
+        .options = { _("Disabled"), _("Enabled") },
+        .optionDescription = {
+            _("Keep the original trainer teams."),
+            _("Randomize trainer species with a fixed seed.")
+        },
+        .numOptions = 2,
     },
     [SETTING_RANDOMIZER_ABILITY_MODE] =
     {
