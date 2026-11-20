@@ -49,7 +49,6 @@ jobs:
               "IsSpeciesRandomizerAllowed("
               "candidate, FALSE, TRUE)"
           )
-
           new_call = (
               "TrainerRandomizerSpeciesAllowed(candidate)"
           )
@@ -132,6 +131,7 @@ jobs:
             https://github.com/Elite-Redux/er-config.git proto
 
           test -f proto/MoveList.textproto
+          test -f proto/SpeciesList.textproto
 
       - name: Fix proto move metadata
         run: |
@@ -203,6 +203,84 @@ jobs:
 
           path.write_text(content)
           PY
+
+      - name: Fix missing Aerodactyl Redux graphics
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("proto/SpeciesList.textproto")
+          source = path.read_text()
+
+          # Temporary graphics fallback for
+          # SPECIES_AERODACTYL_MEGA_REDUX.
+          #
+          # The upstream configuration references
+          # aerodactyl/mr, but the files are absent.
+          #
+          # Keep the species and its mechanics intact.
+          # Only redirect the five graphics paths.
+
+          replacements = {
+              'aerodactyl/mr/icon':
+                  'aerodactyl/icon',
+              'aerodactyl/mr/front':
+                  'aerodactyl/front',
+              'aerodactyl/mr/back':
+                  'aerodactyl/back',
+              'aerodactyl/mr/normal':
+                  'aerodactyl/normal',
+              'aerodactyl/mr/shiny':
+                  'aerodactyl/shiny',
+          }
+
+          for old, new in replacements.items():
+              count = source.count('"' + old + '"')
+
+              if count != 1:
+                  raise SystemExit(
+                      f"ERROR: Expected one reference to "
+                      f"{old}, found {count}."
+                  )
+
+              source = source.replace(
+                  '"' + old + '"',
+                  '"' + new + '"',
+                  1
+              )
+
+              print(f"Replaced {old} -> {new}")
+
+          if "aerodactyl/mr/" in source:
+              raise SystemExit(
+                  "ERROR: Unexpected remaining mr path."
+              )
+
+          path.write_text(source)
+
+          print("Aerodactyl Redux graphics fallback applied.")
+          PY
+
+          echo "=== Checking replacement graphics ==="
+
+          for sprite in \
+            graphics/pokemon/aerodactyl/icon.png \
+            graphics/pokemon/aerodactyl/front.png \
+            graphics/pokemon/aerodactyl/back.png \
+            graphics/pokemon/aerodactyl/normal.pal \
+            graphics/pokemon/aerodactyl/shiny.pal
+          do
+            if [[ -f "$sprite" ]]; then
+              echo "FOUND: $sprite"
+            else
+              echo "ERROR: Missing replacement asset: $sprite"
+              exit 1
+            fi
+          done
+
+          echo "All replacement graphics are present."
 
       - name: Disable overworld debug shortcut
         run: |
@@ -331,108 +409,21 @@ jobs:
 
           echo "Generated headers found."
 
-      - name: Diagnose Aerodactyl sprite paths
-        shell: bash
+      - name: Verify generated Aerodactyl references
         run: |
           set -euo pipefail
 
-          {
-            echo "=========================================="
-            echo "AERODACTYL SPRITE PATH DIAGNOSTICS"
-            echo "=========================================="
-            echo
+          echo "=== Checking generated graphics references ==="
 
-            echo "=== Existing Aerodactyl files ==="
+          if grep -RInF \
+            'graphics/pokemon/aerodactyl/mr/' \
+            include/generated/data/pokemon_graphics
+          then
+            echo "ERROR: Old Aerodactyl mr paths remain."
+            exit 1
+          fi
 
-            if [[ -d graphics/pokemon/aerodactyl ]]; then
-              find graphics/pokemon/aerodactyl \
-                -maxdepth 4 \
-                -type f \
-                | sort
-            else
-              echo "ERROR: Aerodactyl directory is missing."
-            fi
-
-            echo
-            echo "=== Expected normal sprites ==="
-
-            for sprite in \
-              graphics/pokemon/aerodactyl/front.png \
-              graphics/pokemon/aerodactyl/back.png
-            do
-              if [[ -f "$sprite" ]]; then
-                echo "FOUND: $sprite"
-              else
-                echo "MISSING: $sprite"
-              fi
-            done
-
-            echo
-            echo "=== Expected Mega sprites ==="
-
-            for sprite in \
-              graphics/pokemon/aerodactyl/mega/front.png \
-              graphics/pokemon/aerodactyl/mega/back.png
-            do
-              if [[ -f "$sprite" ]]; then
-                echo "FOUND: $sprite"
-              else
-                echo "MISSING: $sprite"
-              fi
-            done
-
-            echo
-            echo "=== Unexpected mr sprites ==="
-
-            for sprite in \
-              graphics/pokemon/aerodactyl/mr/front.png \
-              graphics/pokemon/aerodactyl/mr/back.png
-            do
-              if [[ -f "$sprite" ]]; then
-                echo "FOUND: $sprite"
-              else
-                echo "MISSING: $sprite"
-              fi
-            done
-
-            echo
-            echo "=== References to aerodactyl/mr ==="
-
-            grep -RInI \
-              --exclude-dir=.git \
-              --exclude-dir=build \
-              --exclude-dir=tools \
-              --exclude='*.log' \
-              -E 'aerodactyl/mr|aerodactyl\\mr' \
-              . || true
-
-            echo
-            echo "=== References to aerodactyl/mega ==="
-
-            grep -RInI \
-              --exclude-dir=.git \
-              --exclude-dir=build \
-              --exclude-dir=tools \
-              --exclude='*.log' \
-              -F 'aerodactyl/mega' \
-              . || true
-
-            echo
-            echo "=== Other references to Aerodactyl ==="
-
-            grep -RInI \
-              --exclude-dir=.git \
-              --exclude-dir=build \
-              --exclude-dir=tools \
-              --exclude='*.log' \
-              -E 'SPECIES_AERODACTYL|aerodactyl/mr' \
-              include src graphics \
-              2>/dev/null \
-              | head -n 100 || true
-
-            echo
-            echo "=== Diagnostics complete ==="
-          } 2>&1 | tee aerodactyl-diagnostics.log
+          echo "No missing Aerodactyl mr references remain."
 
       - name: Build Trainer Randomizer ROM
         run: |
@@ -490,7 +481,6 @@ jobs:
           name: TrainerRandomizer-Diagnostics
           path: |
             codegen.log
-            aerodactyl-diagnostics.log
             build.log
           if-no-files-found: ignore
 
