@@ -26,7 +26,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Current commit:"
           git log -1 --oneline
 
           grep -q 'trainerRandomizedMode' include/global.h
@@ -78,8 +77,7 @@ jobs:
 
           if battle.count(marker) != 1:
               raise SystemExit(
-                  "ERROR: Trainer randomizer helper "
-                  "not found."
+                  "ERROR: Trainer randomizer helper not found."
               )
 
           battle = battle.replace(
@@ -333,6 +331,109 @@ jobs:
 
           echo "Generated headers found."
 
+      - name: Diagnose Aerodactyl sprite paths
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=========================================="
+            echo "AERODACTYL SPRITE PATH DIAGNOSTICS"
+            echo "=========================================="
+            echo
+
+            echo "=== Existing Aerodactyl files ==="
+
+            if [[ -d graphics/pokemon/aerodactyl ]]; then
+              find graphics/pokemon/aerodactyl \
+                -maxdepth 4 \
+                -type f \
+                | sort
+            else
+              echo "ERROR: Aerodactyl directory is missing."
+            fi
+
+            echo
+            echo "=== Expected normal sprites ==="
+
+            for sprite in \
+              graphics/pokemon/aerodactyl/front.png \
+              graphics/pokemon/aerodactyl/back.png
+            do
+              if [[ -f "$sprite" ]]; then
+                echo "FOUND: $sprite"
+              else
+                echo "MISSING: $sprite"
+              fi
+            done
+
+            echo
+            echo "=== Expected Mega sprites ==="
+
+            for sprite in \
+              graphics/pokemon/aerodactyl/mega/front.png \
+              graphics/pokemon/aerodactyl/mega/back.png
+            do
+              if [[ -f "$sprite" ]]; then
+                echo "FOUND: $sprite"
+              else
+                echo "MISSING: $sprite"
+              fi
+            done
+
+            echo
+            echo "=== Unexpected mr sprites ==="
+
+            for sprite in \
+              graphics/pokemon/aerodactyl/mr/front.png \
+              graphics/pokemon/aerodactyl/mr/back.png
+            do
+              if [[ -f "$sprite" ]]; then
+                echo "FOUND: $sprite"
+              else
+                echo "MISSING: $sprite"
+              fi
+            done
+
+            echo
+            echo "=== References to aerodactyl/mr ==="
+
+            grep -RInI \
+              --exclude-dir=.git \
+              --exclude-dir=build \
+              --exclude-dir=tools \
+              --exclude='*.log' \
+              -E 'aerodactyl/mr|aerodactyl\\mr' \
+              . || true
+
+            echo
+            echo "=== References to aerodactyl/mega ==="
+
+            grep -RInI \
+              --exclude-dir=.git \
+              --exclude-dir=build \
+              --exclude-dir=tools \
+              --exclude='*.log' \
+              -F 'aerodactyl/mega' \
+              . || true
+
+            echo
+            echo "=== Other references to Aerodactyl ==="
+
+            grep -RInI \
+              --exclude-dir=.git \
+              --exclude-dir=build \
+              --exclude-dir=tools \
+              --exclude='*.log' \
+              -E 'SPECIES_AERODACTYL|aerodactyl/mr' \
+              include src graphics \
+              2>/dev/null \
+              | head -n 100 || true
+
+            echo
+            echo "=== Diagnostics complete ==="
+          } 2>&1 | tee aerodactyl-diagnostics.log
+
       - name: Build Trainer Randomizer ROM
         run: |
           set -euo pipefail
@@ -389,6 +490,7 @@ jobs:
           name: TrainerRandomizer-Diagnostics
           path: |
             codegen.log
+            aerodactyl-diagnostics.log
             build.log
           if-no-files-found: ignore
 
