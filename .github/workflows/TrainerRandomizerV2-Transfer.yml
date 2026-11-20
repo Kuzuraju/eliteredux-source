@@ -1,0 +1,286 @@
+
+name: Trainer Randomizer V2 - Safe Transfer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      BASE_BRANCH: upstream-update-test-44738913856
+      OLD_BRANCH: trainer-randomizer-test
+      TARGET_BRANCH: trainer-randomizer-v2
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Fetch repositories without submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p work report
+          cd work
+
+          git init -q
+
+          git remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+
+          for BRANCH in \
+            upcoming \
+            "$BASE_BRANCH" \
+            "$OLD_BRANCH"
+          do
+            git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+              fetch --no-tags origin \
+              "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+          done
+
+          git checkout -q -b "$TARGET_BRANCH" \
+            "refs/remotes/origin/${BASE_BRANCH}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git rev-parse HEAD \
+            > ../report/base-commit.txt
+
+          git rev-parse "origin/$OLD_BRANCH" \
+            > ../report/prototype-commit.txt
+
+          git merge-base \
+            origin/upcoming \
+            "origin/$OLD_BRANCH" \
+            > ../report/prototype-ancestor.txt
+
+      - name: Extract prototype changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work
+
+          ANCESTOR=$(cat ../report/prototype-ancestor.txt)
+
+          git diff --binary \
+            "$ANCESTOR" \
+            "origin/$OLD_BRANCH" \
+            -- \
+            include/global.h \
+            src/ui_intro_options.c \
+            src/battle_main.c \
+            > ../report/prototype.patch
+
+          git diff --name-status \
+            "$ANCESTOR" \
+            "origin/$OLD_BRANCH" \
+            -- \
+            include/global.h \
+            src/ui_intro_options.c \
+            src/battle_main.c \
+            > ../report/prototype-files.txt
+
+          if [ ! -s ../report/prototype.patch ]; then
+            echo "No prototype changes found." \
+              | tee ../report/result.txt
+            exit 1
+          fi
+
+          echo "Prototype patch extracted."
+
+          cat ../report/prototype-files.txt
+
+      - name: Apply prototype safely
+        id: apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work
+
+          echo "Applying prototype with three-way merge..."
+
+          if git apply --3way --index \
+            ../report/prototype.patch \
+            > ../report/apply-output.txt 2>&1; then
+            APPLY_STATUS=0
+          else
+            APPLY_STATUS=$?
+          fi
+
+          echo "$APPLY_STATUS" \
+            > ../report/apply-exit-code.txt
+
+          git status --short \
+            > ../report/status-after-apply.txt
+
+          git ls-files -u \
+            > ../report/unmerged-index.txt
+
+          if [ "$APPLY_STATUS" -ne 0 ] || \
+             [ -s ../report/unmerged-index.txt ]; then
+
+            echo "Prototype needs manual adaptation." \
+              | tee ../report/result.txt
+
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Checking transferred changes..."
+
+          git diff --cached --name-status \
+            > ../report/transferred-files.txt
+
+          if git diff --cached --quiet; then
+            echo "No changes applied." \
+              | tee ../report/result.txt
+
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Ensure only the three intended files changed.
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+
+          allowed = {
+              "include/global.h",
+              "src/ui_intro_options.c",
+              "src/battle_main.c",
+          }
+
+          result = subprocess.run(
+              [
+                  "git", "diff", "--cached",
+                  "--name-only", "-z"
+              ],
+              capture_output=True,
+              check=True,
+          )
+
+          changed = {
+              p.decode()
+              for p in result.stdout.split(b"\0")
+              if p
+          }
+
+          unexpected = sorted(changed - allowed)
+
+          Path(
+              "../report/unexpected-files.txt"
+          ).write_text(
+              "\n".join(unexpected)
+              + ("\n" if unexpected else "")
+          )
+          PY
+
+          if [ -s ../report/unexpected-files.txt ]; then
+            echo "Unexpected files modified. No push." \
+              | tee ../report/result.txt
+
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check that the prototype's key elements
+          # are still present after the transfer.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          checks = {
+              "include/global.h": [
+                  "trainerRandomizedMode",
+              ],
+              "src/ui_intro_options.c": [
+                  "SETTING_TRAINER_RANDOMIZER_MODE",
+                  "VAR_RANDOMIZED_SEED",
+              ],
+              "src/battle_main.c": [
+                  "GetPrototypeTrainerSpecies",
+                  "CreateNPCTrainerParty",
+              ],
+          }
+
+          missing = []
+
+          for filename, markers in checks.items():
+              text = Path(filename).read_text()
+
+              for marker in markers:
+                  if marker not in text:
+                      missing.append(
+                          f"{filename}: {marker}"
+                      )
+
+          Path(
+              "../report/missing-markers.txt"
+          ).write_text(
+              "\n".join(missing)
+              + ("\n" if missing else "")
+          )
+          PY
+
+          if [ -s ../report/missing-markers.txt ]; then
+            echo "Prototype markers missing. No push." \
+              | tee ../report/result.txt
+
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Prototype transferred successfully." \
+            | tee ../report/result.txt
+
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish Trainer Randomizer V2 branch
+        if: steps.apply.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work
+
+          git commit -m \
+            "Port trainer randomizer prototype to updated Elite Redux"
+
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+
+          # Never overwrite an existing V2 branch.
+          if git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+            ls-remote --exit-code \
+            origin "refs/heads/$TARGET_BRANCH" \
+            > ../report/existing-branch.txt; then
+
+            echo "Target branch already exists. No overwrite." \
+              | tee -a ../report/result.txt
+
+            exit 1
+          fi
+
+          git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+            push origin \
+            "HEAD:refs/heads/$TARGET_BRANCH"
+
+          echo "Published branch: $TARGET_BRANCH" \
+            >> ../report/result.txt
+
+          echo "https://github.com/${GITHUB_REPOSITORY}/tree/${TARGET_BRANCH}" \
+            > ../report/branch-url.txt
+
+      - name: Upload transfer report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrainerRandomizerV2-Transfer-Report
+          path: report/
+          if-no-files-found: warn
+          retention-days: 14
