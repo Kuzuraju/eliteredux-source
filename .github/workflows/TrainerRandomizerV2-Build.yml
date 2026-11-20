@@ -300,6 +300,8 @@ jobs:
               libpng-dev \
               gcc-arm-none-eabi \
               binutils-arm-none-eabi \
+              libnewlib-arm-none-eabi \
+              libnewlib-dev \
               unzip \
               wget \
               2>&1 || true
@@ -321,6 +323,8 @@ jobs:
               libpng-dev
               gcc-arm-none-eabi
               binutils-arm-none-eabi
+              libnewlib-arm-none-eabi
+              libnewlib-dev
               unzip
               wget
             )
@@ -375,6 +379,25 @@ jobs:
             date -u
 
           } 2>&1 | tee report/dependencies.log
+
+      - name: Verify ARM C standard headers
+        run: |
+          set -euo pipefail
+          mkdir -p report
+
+          {
+            echo "Checking ARM C standard library"
+            echo
+
+            printf '#include <string.h>\nint main(void) { return 0; }\n' \
+              | arm-none-eabi-gcc \
+                  -x c \
+                  -fsyntax-only \
+                  -
+
+            echo
+            echo "ARM string.h check passed."
+          } 2>&1 | tee report/arm-headers-check.log
 
       - name: Install Kotlin 2.1.0
         timeout-minutes: 5
