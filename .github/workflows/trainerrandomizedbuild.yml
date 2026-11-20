@@ -26,9 +26,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Current branch:"
-          git branch --show-current
-
           echo "Current commit:"
           git log -1 --oneline
 
@@ -37,6 +34,84 @@ jobs:
           grep -q 'GetPrototypeTrainerSpecies' src/battle_main.c
 
           echo "Trainer Randomizer source detected."
+
+      - name: Fix species randomizer function visibility
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          battle_path = Path("src/battle_main.c")
+          pokemon_path = Path("src/pokemon.c")
+
+          battle = battle_path.read_text()
+          pokemon = pokemon_path.read_text()
+
+          old_call = (
+              "IsSpeciesRandomizerAllowed("
+              "candidate, FALSE, TRUE)"
+          )
+
+          new_call = (
+              "TrainerRandomizerSpeciesAllowed(candidate)"
+          )
+
+          if battle.count(old_call) != 1:
+              raise SystemExit(
+                  "ERROR: Expected exactly one trainer "
+                  "species filter call."
+              )
+
+          if "IsSpeciesRandomizerAllowed(" not in pokemon:
+              raise SystemExit(
+                  "ERROR: Species filter not found in pokemon.c."
+              )
+
+          declaration = (
+              "\nextern bool8 "
+              "TrainerRandomizerSpeciesAllowed(u16 species);\n"
+          )
+
+          marker = (
+              "static SpeciesEnum "
+              "GetPrototypeTrainerSpecies("
+          )
+
+          if battle.count(marker) != 1:
+              raise SystemExit(
+                  "ERROR: Trainer randomizer helper "
+                  "not found."
+              )
+
+          battle = battle.replace(
+              marker,
+              declaration + "\n" + marker,
+              1
+          )
+
+          battle = battle.replace(
+              old_call,
+              new_call,
+              1
+          )
+
+          wrapper = """
+
+          // Bridge for the experimental trainer randomizer.
+          bool8 TrainerRandomizerSpeciesAllowed(u16 species)
+          {
+              return IsSpeciesRandomizerAllowed(
+                  species, FALSE, TRUE
+              );
+          }
+          """
+
+          pokemon += wrapper
+
+          battle_path.write_text(battle)
+          pokemon_path.write_text(pokemon)
+
+          print("Species filter bridge installed.")
+          PY
 
       - name: Check base ROM
         run: |
@@ -60,9 +135,7 @@ jobs:
 
           test -f proto/MoveList.textproto
 
-          echo "Proto files downloaded."
-
-      - name: Fix Sparkling Blast short name
+      - name: Fix proto move metadata
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -71,74 +144,17 @@ jobs:
           path = Path("proto/MoveList.textproto")
           content = path.read_text()
 
-          blocks = list(re.finditer(
-              r'moves\s*\{[^}]*\}',
-              content,
-              re.DOTALL
-          ))
-
-          found = False
-          modified = False
-
-          for block in reversed(blocks):
-              original = block.group()
-
-              if not re.search(
-                  r'\bid:\s*MOVE_SPARKLING_BLAST\b',
-                  original
-              ):
-                  continue
-
-              found = True
-
-              updated, count = re.subn(
-                  r'(short_name:\s*")'
-                  r'(?:\\.|[^"\\])*'
-                  r'(")',
-                  lambda m: (
-                      m.group(1)
-                      + "SparklBlast"
-                      + m.group(2)
-                  ),
-                  original,
-                  count=1
-              )
-
-              if count == 1:
-                  content = (
-                      content[:block.start()]
-                      + updated
-                      + content[block.end():]
-                  )
-                  modified = True
-              else:
-                  print(
-                      "Sparkling Blast found, "
-                      "but short_name field is absent."
-                  )
-
-          if not found:
-              print(
-                  "NOTICE: MOVE_SPARKLING_BLAST "
-                  "not found in MoveList.textproto."
-              )
-          elif modified:
-              path.write_text(content)
-              print(
-                  "Sparkling Blast short_name corrected."
-              )
-
-          print("Continuing to code generation.")
-          PY
-
-      - name: Fix Glitter Beam description
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          path = Path("proto/MoveList.textproto")
-          content = path.read_text()
+          changes = {
+              "MOVE_SPARKLING_BLAST": (
+                  "short_name",
+                  "SparklBlast"
+              ),
+              "MOVE_GLITTER_BEAM": (
+                  "description",
+                  "A shining beam that lowers "
+                  "the foe's accuracy. Light-based."
+              ),
+          }
 
           blocks = list(re.finditer(
               r'moves\s*\{[^}]*\}',
@@ -146,63 +162,48 @@ jobs:
               re.DOTALL
           ))
 
-          found = False
-          modified = False
-
-          description = (
-              "A shining beam that lowers "
-              "the foe's accuracy. Light-based."
-          )
-
           for block in reversed(blocks):
               original = block.group()
+              updated = original
 
-              if not re.search(
-                  r'\bid:\s*MOVE_GLITTER_BEAM\b',
-                  original
-              ):
-                  continue
+              for move_id, (field, value) in changes.items():
+                  if not re.search(
+                      rf'\bid:\s*{move_id}\b',
+                      original
+                  ):
+                      continue
 
-              found = True
+                  pattern = (
+                      rf'({field}:\s*")'
+                      r'(?:\\.|[^"\\])*'
+                      r'(")'
+                  )
 
-              updated, count = re.subn(
-                  r'(description:\s*")'
-                  r'(?:\\.|[^"\\])*'
-                  r'(")',
-                  lambda m: (
-                      m.group(1)
-                      + description
-                      + m.group(2)
-                  ),
-                  original,
-                  count=1
-              )
+                  updated, count = re.subn(
+                      pattern,
+                      lambda m: (
+                          m.group(1) + value + m.group(2)
+                      ),
+                      updated,
+                      count=1
+                  )
 
-              if count == 1:
+                  if count:
+                      print(f"Updated {move_id}: {field}")
+                  else:
+                      print(
+                          f"NOTICE: {move_id} has no "
+                          f"{field} field."
+                      )
+
+              if updated != original:
                   content = (
                       content[:block.start()]
                       + updated
                       + content[block.end():]
                   )
-                  modified = True
-              else:
-                  print(
-                      "Glitter Beam found, "
-                      "but description field is absent."
-                  )
 
-          if not found:
-              print(
-                  "NOTICE: MOVE_GLITTER_BEAM "
-                  "not found in MoveList.textproto."
-              )
-          elif modified:
-              path.write_text(content)
-              print(
-                  "Glitter Beam description corrected."
-              )
-
-          print("Continuing to code generation.")
+          path.write_text(content)
           PY
 
       - name: Disable overworld debug shortcut
@@ -230,9 +231,6 @@ jobs:
             unzip \
             wget
 
-      # Important: select Java 17 explicitly.
-      # Installing a JDK with apt does not guarantee
-      # that it becomes the active Java version.
       - name: Configure Java 17
         uses: actions/setup-java@v4
         with:
@@ -240,11 +238,8 @@ jobs:
           java-version: '17'
 
       - name: Verify Java 17
-        shell: bash
         run: |
           set -euo pipefail
-
-          echo "JAVA_HOME=$JAVA_HOME"
 
           java -version
           javac -version
@@ -256,10 +251,7 @@ jobs:
             exit 1
           fi
 
-          echo "Java 17 is active."
-
-      - name: Install modern Kotlin compiler
-        shell: bash
+      - name: Install Kotlin compiler
         run: |
           set -euo pipefail
 
@@ -276,11 +268,7 @@ jobs:
 
           echo "$RUNNER_TEMP/kotlin/kotlinc/bin" >> "$GITHUB_PATH"
 
-          echo "Testing Kotlin with Java 17..."
-
           "$RUNNER_TEMP/kotlin/kotlinc/bin/kotlinc" -version
-
-          echo "Kotlin compiler installed."
 
       - name: Download Poryscript
         run: |
@@ -329,29 +317,16 @@ jobs:
                   "ERROR: -Werror still present."
               )
 
-          print(
-              "Compiler compatibility flags updated."
-          )
+          print("Compiler compatibility flags updated.")
           PY
 
-          grep -nE 'gnu2x|Wno-error' Makefile
-
       - name: Generate code before compilation
-        shell: bash
         run: |
           set -euo pipefail
-
-          echo "=== Java version ==="
-          java -version
-
-          echo "=== Kotlin version ==="
-          kotlinc -version
 
           echo "=== Generating Elite Redux code ==="
 
           make -C tools/codegen 2>&1 | tee codegen.log
-
-          echo "=== Checking generated headers ==="
 
           test -f include/generated/data/megas/legendary_sage.h
           test -f include/generated/data/megas/adoption_center.h
@@ -359,7 +334,6 @@ jobs:
           echo "Generated headers found."
 
       - name: Build Trainer Randomizer ROM
-        shell: bash
         run: |
           set -euo pipefail
 
