@@ -62,7 +62,7 @@ jobs:
            void CreateSecretBaseEnemyParty(struct SecretBase* secretBaseRecord);
            u8 GetSecretBaseTrainerPicIndex(void);
           diff --git a/src/battle_main.c b/src/battle_main.c
-          index 3768b301..286bcbb6 100644
+          index 3768b301..e4fd3122 100644
           --- a/src/battle_main.c
           +++ b/src/battle_main.c
           @@ -22,6 +22,7 @@
@@ -97,7 +97,7 @@ jobs:
           +static u8 *AllocTrainerEvolutionStages(void)
           +{
           +    // Two bits per species, allocated only while constructing the trainer party.
-          +    u8 *stages = AllocZero((REAL_SPECIES_COUNT + 3) / 4);
+          +    u8 *stages = AllocZeroed((REAL_SPECIES_COUNT + 3) / 4);
           +    if (stages == NULL)
           +        return NULL;
           +
