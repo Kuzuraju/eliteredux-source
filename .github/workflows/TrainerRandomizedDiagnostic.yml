@@ -4,29 +4,74 @@ name: Trainer Randomizer Diagnostic
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   investigate:
     runs-on: ubuntu-latest
 
     steps:
- - name: Checkout Elite Redux
-  uses: actions/checkout@v4
-  with:
-    ref: upcoming
-    fetch-depth: 1
-    submodules: false
-    lfs: false
-    persist-credentials: false
+      - name: Download Elite Redux source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          echo "Downloading upcoming branch..."
+
+          curl --fail --location --retry 3 \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPOSITORY}/zipball/upcoming" \
+            --output source.zip
+
+          mkdir -p source
+
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          with ZipFile("source.zip") as archive:
+              archive.extractall("source")
+
+          folders = [
+              p for p in Path("source").iterdir()
+              if p.is_dir()
+          ]
+
+          if len(folders) != 1:
+              raise RuntimeError(
+                  "Unexpected source archive structure"
+              )
+
+          root = folders[0]
+
+          for item in root.iterdir():
+              item.rename(Path("source") / item.name)
+
+          root.rmdir()
+          PY
+
+          test -f source/src/pokemon.c
+          test -f source/src/battle_main.c
+
+          echo "Source downloaded successfully."
 
       - name: Investigate trainer randomization
         shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p trainer-diagnostic
 
           python3 - <<'PY'
           from pathlib import Path
           import re
 
+          root = Path("source")
           output = Path("trainer-diagnostic/report.txt")
 
           searches = {
@@ -47,7 +92,7 @@ jobs:
                   (r"\bSETTING_RANDOMIZER_MODE\b", 50, 10),
                   (r"\bSaveOptionsData\s*\(", 55, 5),
                   (r"\bLoadOptionsData\s*\(", 55, 5),
-                  (r"\bsOption", 15, 5),
+                  (r"\bsOptions\b", 65, 10),
               ],
               "include/global.h": [
                   (r"\bstruct SaveBlock2\b", 100, 5),
@@ -66,7 +111,7 @@ jobs:
 
               for filename, patterns in searches.items():
                   report.write(f"\n=== {filename} ===\n")
-                  path = Path(filename)
+                  path = root / filename
 
                   if not path.exists():
                       report.write("FILE NOT FOUND\n")
@@ -123,7 +168,7 @@ jobs:
 
             grep -RniE \
               'MON_DATA_ABILITY_NUM|MON_DATA_INNATE|RandomizeInnate|RandomizeAbility|abilityNum|innates' \
-              src include \
+              source/src source/include \
               --include='*.c' \
               --include='*.h' \
               2>/dev/null | head -300 || true
@@ -133,7 +178,7 @@ jobs:
 
             grep -RniE \
               'selectMoves\(|GiveMonInitialMoveset|GiveMonMoves|GetLevelUp' \
-              src include \
+              source/src source/include \
               --include='*.c' \
               --include='*.h' \
               2>/dev/null | head -180 || true
@@ -149,7 +194,7 @@ jobs:
 
             grep -RniE \
               'TRAINER_ROXANNE|TRAINER_BRAWLY|TRAINER_WATTSON|TRAINER_FLANNERY|TRAINER_NORMAN|TRAINER_WINONA|TRAINER_TATE_AND_LIZA|TRAINER_WALLACE|TRAINER_SIDNEY|TRAINER_PHOEBE|TRAINER_GLACIA|TRAINER_DRAKE|TRAINER_STEVEN' \
-              include/constants src/battle_setup.c \
+              source/include/constants source/src/battle_setup.c \
               --include='*.h' \
               --include='*.c' \
               2>/dev/null | head -250 || true
@@ -157,7 +202,7 @@ jobs:
             echo
             echo "=== TRAINER DATA LOCATIONS ==="
 
-            find src include \
+            find source/src source/include \
               -type f \
               \( -iname '*trainer*' -o -iname '*randomizer*' \) \
               | sort | head -120
@@ -173,7 +218,7 @@ jobs:
 
             grep -RniE \
               'VAR_RANDOMIZED_SEED|RandRangeDeterministic|ISO_RANDOMIZE1' \
-              src include \
+              source/src source/include \
               --include='*.c' \
               --include='*.h' \
               2>/dev/null | head -200 || true
@@ -183,7 +228,7 @@ jobs:
 
             grep -RniE \
               'bossRushMode|->filler|\.filler|sizeof\(struct SaveBlock2\)' \
-              src include \
+              source/src source/include \
               --include='*.c' \
               --include='*.h' \
               2>/dev/null | head -160 || true
