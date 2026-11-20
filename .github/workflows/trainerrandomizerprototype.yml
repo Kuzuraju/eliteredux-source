@@ -1,0 +1,441 @@
+
+name: Trainer Randomizer Prototype
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  create-prototype:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          curl -fL --retry 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPOSITORY}/zipball/upcoming" \
+            -o source.zip
+
+          mkdir source
+
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          with ZipFile("source.zip") as z:
+              z.extractall("source")
+
+          roots = [p for p in Path("source").iterdir()
+                   if p.is_dir()]
+          assert len(roots) == 1
+
+          root = roots[0]
+          for p in list(root.iterdir()):
+              p.rename(Path("source") / p.name)
+          root.rmdir()
+          PY
+
+      - name: Apply experimental patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > patch.py <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path("source")
+
+          def load(name):
+              return (root / name).read_text(
+                  encoding="utf-8"
+              )
+
+          def save(name, data):
+              (root / name).write_text(
+                  data, encoding="utf-8"
+              )
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(
+                      f"{label}: expected 1 match, got {count}"
+                  )
+              return text.replace(old, new, 1)
+
+          # -----------------------------------------
+          # 1. SaveBlock2: use one spare bit
+          # -----------------------------------------
+
+          path = "include/global.h"
+          text = load(path)
+
+          text = replace_once(
+              text,
+              "u8 filler:2;",
+              "u8 trainerRandomizedMode:1;\n"
+              "    u8 filler:1;",
+              "SaveBlock2 flag"
+          )
+
+          save(path, text)
+
+          # -----------------------------------------
+          # 2. Intro menu
+          # -----------------------------------------
+
+          path = "src/ui_intro_options.c"
+          text = load(path)
+
+          text = replace_once(
+              text,
+              "    SETTING_RANDOMIZER_ABILITY_MODE,",
+              "    SETTING_TRAINER_RANDOMIZER_MODE,\n"
+              "    SETTING_RANDOMIZER_ABILITY_MODE,",
+              "Menu enum"
+          )
+
+          menu_option = '''
+              [SETTING_TRAINER_RANDOMIZER_MODE] =
+              {
+                  .title = _("Trainer Randomizer"),
+                  .options = {
+                      _("Disabled"),
+                      _("Enabled"),
+                  },
+                  .optionDescription = {
+                      _("Trainer teams stay unchanged."),
+                      _("Trainer species are randomized.\\n"
+                        "The same seed gives the same teams."),
+                  },
+                  .numOptions = 2,
+              },
+          '''
+
+          text = replace_once(
+              text,
+              "    [SETTING_RANDOMIZER_ABILITY_MODE] =",
+              menu_option +
+              "    [SETTING_RANDOMIZER_ABILITY_MODE] =",
+              "Menu option"
+          )
+
+          save_anchor = (
+              "    gSaveBlock2Ptr->innaterandomizedMode"
+          )
+
+          save_code = '''
+              gSaveBlock2Ptr->trainerRandomizedMode =
+                  sMenuDataPtr->temporal_settings[
+                      SETTING_TRAINER_RANDOMIZER_MODE
+                  ];
+
+              if (gSaveBlock2Ptr->trainerRandomizedMode &&
+                  VarGet(VAR_RANDOMIZED_SEED) == 0)
+              {
+                  u16 seed = Random();
+                  if (seed == 0)
+                      seed = 1;
+                  VarSet(VAR_RANDOMIZED_SEED, seed);
+              }
+
+          '''
+
+          text = replace_once(
+              text,
+              save_anchor,
+              save_code + save_anchor,
+              "Save menu option"
+          )
+
+          load_anchor = (
+              "    sMenuDataPtr->temporal_settings"
+              "[SETTING_RANDOMIZER_INNATE_MODE]"
+          )
+
+          load_code = '''
+              sMenuDataPtr->temporal_settings[
+                  SETTING_TRAINER_RANDOMIZER_MODE
+              ] = gSaveBlock2Ptr->trainerRandomizedMode;
+
+          '''
+
+          text = replace_once(
+              text,
+              load_anchor,
+              load_code + load_anchor,
+              "Load menu option"
+          )
+
+          save(path, text)
+
+          # -----------------------------------------
+          # 3. Trainer species generation
+          # -----------------------------------------
+
+          path = "src/battle_main.c"
+          text = load(path)
+
+          helper = '''
+          // Experimental deterministic trainer randomizer.
+          // No global RNG calls are used here.
+          static SpeciesEnum GetPrototypeTrainerSpecies(
+              u16 trainerNum,
+              u8 slot,
+              u8 difficulty,
+              SpeciesEnum original)
+          {
+              u32 seed = VarGet(VAR_RANDOMIZED_SEED);
+              SpeciesEnum candidate;
+              u16 attempt;
+
+              if (seed == 0)
+                  return original;
+
+              seed ^= (u32)trainerNum * 0x9E3779B9u;
+              seed ^= (u32)(slot + 1) * 0x85EBCA6Bu;
+              seed ^= (u32)(difficulty + 1) * 0xC2B2AE35u;
+
+              if (seed == 0)
+                  seed = 1;
+
+              for (attempt = 0; attempt < 512; attempt++)
+              {
+                  candidate = RandRangeDeterministic(
+                      1, REAL_SPECIES_COUNT - 1, &seed
+                  );
+
+                  if (IsSpeciesRandomizerAllowed(
+                      candidate, FALSE, TRUE
+                  ))
+                      return candidate;
+              }
+
+              return original;
+          }
+
+          '''
+
+          anchor = (
+              "static u8 CreateNPCTrainerParty("
+              "struct Pokemon* party, u16 trainerNum, "
+              "bool8 firstTrainer) {"
+          )
+
+          text = replace_once(
+              text, anchor, helper + anchor,
+              "Trainer helper"
+          )
+
+          function_start = text.index(anchor)
+          function_end = text.index(
+              "\nvoid VBlankCB_Battle", function_start
+          )
+
+          before = text[:function_start]
+          function = text[function_start:function_end]
+          after = text[function_end:]
+
+          function = replace_once(
+              function,
+              "    u32 nameHash = 0;",
+              "    u32 nameHash = 0;\n"
+              "    bool8 prototypeRandomized = FALSE;",
+              "Trainer local state"
+          )
+
+          old_creation = '''
+              if (trainerNum == TRAINER_OLDPLAYER) {
+                  species = Random() % 500;
+                  CreateMon(&party[i], species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
+              } else
+                  CreateMon(&party[i], partyData[i].species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
+          '''
+
+          new_creation = '''
+              prototypeRandomized = FALSE;
+
+              if (trainerNum == TRAINER_OLDPLAYER) {
+                  species = Random() % 500;
+                  CreateMon(&party[i], species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
+              } else {
+                  species = partyData[i].species;
+
+                  if (gSaveBlock2Ptr->trainerRandomizedMode) {
+                      species = GetPrototypeTrainerSpecies(
+                          trainerNum, i, difficultySetting, species
+                      );
+                      prototypeRandomized =
+                          species != partyData[i].species;
+                  }
+
+                  CreateMon(&party[i], species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
+              }
+          '''
+
+          function = replace_once(
+              function,
+              old_creation,
+              new_creation,
+              "Trainer species creation"
+          )
+
+          function = replace_once(
+              function,
+              "SetMonData(&party[i], MON_DATA_HELD_ITEM, "
+              "&partyData[i].heldItem);",
+              "if (!prototypeRandomized)\n"
+              "                SetMonData(&party[i], "
+              "MON_DATA_HELD_ITEM, "
+              "&partyData[i].heldItem);",
+              "Held item"
+          )
+
+          function = replace_once(
+              function,
+              "SetMonData(&party[i], MON_DATA_ABILITY_NUM, "
+              "&partyData[i].ability);",
+              "if (!prototypeRandomized)\n"
+              "                SetMonData(&party[i], "
+              "MON_DATA_ABILITY_NUM, "
+              "&partyData[i].ability);",
+              "Ability"
+          )
+
+          function = replace_once(
+              function,
+              "} else {\n"
+              "                for (j = 0; j < MAX_MON_MOVES; j++) {\n"
+              "                    SetMonData(&party[i], "
+              "MON_DATA_MOVE1 + j, &partyData[i].moves[j]);",
+              "} else if (!prototypeRandomized) {\n"
+              "                for (j = 0; j < MAX_MON_MOVES; j++) {\n"
+              "                    SetMonData(&party[i], "
+              "MON_DATA_MOVE1 + j, &partyData[i].moves[j]);",
+              "Original trainer moves"
+          )
+
+          text = before + function + after
+          save(path, text)
+
+          print("Patch applied to:")
+          print(" - include/global.h")
+          print(" - src/ui_intro_options.c")
+          print(" - src/battle_main.c")
+          PY
+
+          python3 patch.py
+
+      - name: Create prototype branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import json
+          import base64
+          import urllib.request
+          import urllib.error
+          from pathlib import Path
+
+          repo = os.environ["REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          branch = "trainer-randomizer-test"
+          base = f"https://api.github.com/repos/{repo}"
+
+          def api(method, endpoint, payload=None):
+              data = None
+              if payload is not None:
+                  data = json.dumps(payload).encode()
+
+              request = urllib.request.Request(
+                  base + endpoint,
+                  data=data,
+                  method=method,
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                      "Content-Type": "application/json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  }
+              )
+
+              with urllib.request.urlopen(request) as r:
+                  return json.load(r)
+
+          source = api(
+              "GET", "/git/ref/heads/upcoming"
+          )
+          sha = source["object"]["sha"]
+
+          try:
+              api("GET", f"/git/ref/heads/{branch}")
+              raise RuntimeError(
+                  "Prototype branch already exists. "
+                  "Delete it manually before rerunning."
+              )
+          except urllib.error.HTTPError as e:
+              if e.code != 404:
+                  raise
+
+          api("POST", "/git/refs", {
+              "ref": f"refs/heads/{branch}",
+              "sha": sha
+          })
+
+          files = [
+              "include/global.h",
+              "src/ui_intro_options.c",
+              "src/battle_main.c",
+          ]
+
+          for filename in files:
+              original = api(
+                  "GET",
+                  f"/contents/{filename}?ref={branch}"
+              )
+
+              content = base64.b64encode(
+                  Path("source", filename).read_bytes()
+              ).decode()
+
+              api("PUT", f"/contents/{filename}", {
+                  "message": (
+                      "Prototype trainer randomizer: "
+                      + filename
+                  ),
+                  "content": content,
+                  "sha": original["sha"],
+                  "branch": branch
+              })
+
+              print("Updated:", filename)
+
+          print("Created branch:", branch)
+          PY
+
+      - name: Upload patch files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trainer-Randomizer-Prototype-Sources
+          path: |
+            source/include/global.h
+            source/src/ui_intro_options.c
+            source/src/battle_main.c
+          retention-days: 7
