@@ -40,6 +40,8 @@ jobs:
 
       - name: Check base ROM
         run: |
+          set -euo pipefail
+
           test -f rom.gba || {
             echo "ERROR: rom.gba was not found."
             exit 1
@@ -126,9 +128,7 @@ jobs:
                   "Sparkling Blast short_name corrected."
               )
 
-          print(
-              "Continuing to code generation."
-          )
+          print("Continuing to code generation.")
           PY
 
       - name: Fix Glitter Beam description
@@ -202,9 +202,7 @@ jobs:
                   "Glitter Beam description corrected."
               )
 
-          print(
-              "Continuing to code generation."
-          )
+          print("Continuing to code generation.")
           PY
 
       - name: Disable overworld debug shortcut
@@ -230,10 +228,38 @@ jobs:
             gcc-arm-none-eabi \
             binutils-arm-none-eabi \
             unzip \
-            wget \
-            openjdk-17-jdk
+            wget
+
+      # Important: select Java 17 explicitly.
+      # Installing a JDK with apt does not guarantee
+      # that it becomes the active Java version.
+      - name: Configure Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Verify Java 17
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "JAVA_HOME=$JAVA_HOME"
+
+          java -version
+          javac -version
+
+          JAVA_VERSION="$(java -version 2>&1 | head -n 1)"
+
+          if [[ "$JAVA_VERSION" != *'"17.'* ]]; then
+            echo "ERROR: Java 17 is not active."
+            exit 1
+          fi
+
+          echo "Java 17 is active."
 
       - name: Install modern Kotlin compiler
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -250,7 +276,11 @@ jobs:
 
           echo "$RUNNER_TEMP/kotlin/kotlinc/bin" >> "$GITHUB_PATH"
 
+          echo "Testing Kotlin with Java 17..."
+
           "$RUNNER_TEMP/kotlin/kotlinc/bin/kotlinc" -version
+
+          echo "Kotlin compiler installed."
 
       - name: Download Poryscript
         run: |
@@ -307,8 +337,15 @@ jobs:
           grep -nE 'gnu2x|Wno-error' Makefile
 
       - name: Generate code before compilation
+        shell: bash
         run: |
           set -euo pipefail
+
+          echo "=== Java version ==="
+          java -version
+
+          echo "=== Kotlin version ==="
+          kotlinc -version
 
           echo "=== Generating Elite Redux code ==="
 
@@ -322,6 +359,7 @@ jobs:
           echo "Generated headers found."
 
       - name: Build Trainer Randomizer ROM
+        shell: bash
         run: |
           set -euo pipefail
 
