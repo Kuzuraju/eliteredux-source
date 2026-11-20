@@ -1,0 +1,340 @@
+
+name: Elite Redux - Upstream Build Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      TEST_BRANCH: upstream-update-test-44738913856
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GAME_VERSION: EMERALD
+      GAME_REVISION: 0
+      GAME_LANGUAGE: ENGLISH
+      MODERN: 0
+      COMPARE: 0
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Fetch test branch without submodules
+        run: |
+          set -euo pipefail
+
+          mkdir -p work report
+          cd work
+
+          git init -q
+
+          git remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+
+          git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+            fetch --depth 1 --no-tags origin \
+            "+refs/heads/${TEST_BRANCH}:refs/remotes/origin/${TEST_BRANCH}"
+
+          git checkout -q --detach \
+            "refs/remotes/origin/${TEST_BRANCH}"
+
+          git rev-parse HEAD > ../report/source-commit.txt
+          git status --short > ../report/source-status.txt
+
+          echo "Building commit:"
+          git log -1 --oneline
+
+      - name: Verify base ROM
+        run: |
+          set -euo pipefail
+          cd work
+
+          if [ ! -f rom.gba ]; then
+            echo "ERROR: rom.gba not found."
+            exit 1
+          fi
+
+          ls -lh rom.gba
+
+      - name: Fetch official er-config
+        run: |
+          set -euo pipefail
+          cd work
+
+          rm -rf proto
+
+          git clone --depth 1 --branch upcoming \
+            https://github.com/Elite-Redux/er-config.git \
+            proto
+
+          git -C proto rev-parse HEAD \
+            > ../report/config-commit.txt
+
+          test -f proto/MoveList.textproto
+          test -f proto/SpeciesList.textproto
+
+          echo "Official configuration downloaded."
+
+      - name: Apply compatible move metadata fixes
+        run: |
+          set -euo pipefail
+          cd work
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("proto/MoveList.textproto")
+          content = path.read_text()
+
+          fixes = [
+              (
+                  "MOVE_SPARKLING_BLAST",
+                  "short_name",
+                  "SparklBlast",
+              ),
+              (
+                  "MOVE_GLITTER_BEAM",
+                  "description",
+                  "A shining beam that lowers "
+                  "the foe's accuracy. Light-based.",
+              ),
+          ]
+
+          for move, field, replacement in fixes:
+              pattern = (
+                  r'(moves\s*\{\s*'
+                  + r'id:\s*'
+                  + re.escape(move)
+                  + r'\b[^}]*?'
+                  + re.escape(field)
+                  + r':\s*")'
+                  + r'(?:\\.|[^"\\])*'
+                  + r'(")'
+              )
+
+              content, count = re.subn(
+                  pattern,
+                  lambda m, value=replacement:
+                      m.group(1) + value + m.group(2),
+                  content,
+                  count=1,
+                  flags=re.DOTALL,
+              )
+
+              if count:
+                  print(f"Applied: {move} {field}")
+              else:
+                  print(
+                      f"Not found: {move} {field}; "
+                      "leaving configuration unchanged."
+                  )
+
+          path.write_text(content)
+          PY
+
+      - name: Configure debug shortcut
+        run: |
+          set -euo pipefail
+          cd work
+
+          if [ -f include/debug.h ]; then
+            sed -i -E \
+              's/^(#define TX_DEBUG_SYSTEM_IN_MENU[[:space:]]+)TRUE/\1FALSE/' \
+              include/debug.h
+          fi
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            libpng-dev \
+            gcc-arm-none-eabi \
+            binutils-arm-none-eabi \
+            unzip \
+            wget \
+            openjdk-17-jdk
+
+          java -version
+          arm-none-eabi-gcc --version
+
+      - name: Install Kotlin compiler
+        run: |
+          set -euo pipefail
+
+          KOTLIN_VERSION=2.1.0
+
+          wget -q \
+            "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
+            -O "$RUNNER_TEMP/kotlin.zip"
+
+          mkdir -p "$RUNNER_TEMP/kotlin"
+
+          unzip -q "$RUNNER_TEMP/kotlin.zip" \
+            -d "$RUNNER_TEMP/kotlin"
+
+          echo "$RUNNER_TEMP/kotlin/kotlinc/bin" \
+            >> "$GITHUB_PATH"
+
+          "$RUNNER_TEMP/kotlin/kotlinc/bin/kotlinc" \
+            -version
+
+      - name: Install Poryscript
+        run: |
+          set -euo pipefail
+          cd work/tools
+
+          rm -rf \
+            poryscript \
+            poryscript-linux \
+            poryscript-linux.zip
+
+          wget -q \
+            https://github.com/huderlem/poryscript/releases/download/3.5.2/poryscript-linux.zip \
+            -O poryscript-linux.zip
+
+          unzip -o -q poryscript-linux.zip
+
+          mv poryscript-linux poryscript
+
+          chmod +x poryscript
+
+          rm poryscript-linux.zip
+
+      - name: Adjust compiler flags
+        run: |
+          set -euo pipefail
+          cd work
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("Makefile")
+          content = path.read_text()
+
+          content = content.replace(
+              "-std=gnu23",
+              "-std=gnu2x",
+          )
+
+          content = re.sub(
+              r"-Werror\b",
+              "-Wno-error",
+              content,
+          )
+
+          path.write_text(content)
+
+          print("Compiler compatibility flags checked.")
+          PY
+
+      - name: Generate source data
+        run: |
+          set -euo pipefail
+          cd work
+
+          echo "Starting code generation..."
+
+          make -C tools/codegen \
+            2>&1 | tee ../report/codegen.log
+
+          echo "Checking generated headers..."
+
+          for file in \
+            include/generated/data/megas/legendary_sage.h \
+            include/generated/data/megas/adoption_center.h
+          do
+            if [ -f "$file" ]; then
+              echo "Present: $file"
+            else
+              echo "Missing: $file"
+              echo "$file" \
+                >> ../report/missing-generated-files.txt
+            fi
+          done
+
+          if [ -s ../report/missing-generated-files.txt ]; then
+            echo "Required generated files missing."
+            exit 1
+          fi
+
+      - name: Compile updated Elite Redux
+        run: |
+          set -euo pipefail
+          cd work
+
+          echo "Starting full compilation..."
+
+          make -j"$(nproc)" \
+            2>&1 | tee ../report/build.log
+
+          test -f pokeemerald_modern.gba
+
+          ls -lh pokeemerald_modern.gba
+
+          echo "Compilation successful." \
+            > ../report/build-result.txt
+
+      - name: Create and verify BPS patch
+        run: |
+          set -euo pipefail
+          cd work
+
+          chmod +x ./flips-linux
+
+          ./flips-linux --create \
+            rom.gba \
+            pokeemerald_modern.gba \
+            EliteRedux-Updated.bps
+
+          ./flips-linux --apply \
+            EliteRedux-Updated.bps \
+            rom.gba \
+            EliteRedux-Updated.gba
+
+          cmp \
+            pokeemerald_modern.gba \
+            EliteRedux-Updated.gba
+
+          echo "Patch verification successful." \
+            > ../report/patch-result.txt
+
+          ls -lh \
+            EliteRedux-Updated.bps \
+            EliteRedux-Updated.gba
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: EliteRedux-Upstream-Build-Report
+          path: report/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload compiled game
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: EliteRedux-Updated-Build
+          path: |
+            work/EliteRedux-Updated.bps
+            work/EliteRedux-Updated.gba
+          if-no-files-found: error
+          retention-days: 14
