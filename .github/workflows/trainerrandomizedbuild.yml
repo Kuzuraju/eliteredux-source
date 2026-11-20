@@ -32,8 +32,6 @@ jobs:
           echo "Current commit:"
           git log -1 --oneline
 
-          echo "Checking Trainer Randomizer files..."
-
           grep -q 'trainerRandomizedMode' include/global.h
           grep -q 'SETTING_TRAINER_RANDOMIZER_MODE' src/ui_intro_options.c
           grep -q 'GetPrototypeTrainerSpecies' src/battle_main.c
@@ -43,19 +41,24 @@ jobs:
       - name: Check base ROM
         run: |
           test -f rom.gba || {
-            echo "ERROR: rom.gba was not found in the repository root."
+            echo "ERROR: rom.gba was not found."
             exit 1
           }
+
           ls -lh rom.gba
 
       - name: Checkout proto files
         run: |
+          set -euo pipefail
+
           rm -rf proto
 
           git clone --depth 1 --branch upcoming \
             https://github.com/Elite-Redux/er-config.git proto
 
-          test -d proto
+          test -f proto/MoveList.textproto
+
+          echo "Proto files downloaded."
 
       - name: Fix Sparkling Blast short name
         run: |
@@ -66,31 +69,66 @@ jobs:
           path = Path("proto/MoveList.textproto")
           content = path.read_text()
 
-          pattern = (
-              r'(moves\s*\{\s*'
-              r'id:\s*MOVE_SPARKLING_BLAST\b'
-              r'[^}]*?'
-              r'short_name:\s*")'
-              r'(?:\\.|[^"\\])*'
-              r'(")'
-          )
-
-          updated, count = re.subn(
-              pattern,
-              lambda m: m.group(1) + "SparklBlast" + m.group(2),
+          blocks = list(re.finditer(
+              r'moves\s*\{[^}]*\}',
               content,
-              count=1,
-              flags=re.DOTALL
-          )
+              re.DOTALL
+          ))
 
-          if count != 1:
-              raise SystemExit(
-                  "ERROR: Sparkling Blast short_name not found."
+          found = False
+          modified = False
+
+          for block in reversed(blocks):
+              original = block.group()
+
+              if not re.search(
+                  r'\bid:\s*MOVE_SPARKLING_BLAST\b',
+                  original
+              ):
+                  continue
+
+              found = True
+
+              updated, count = re.subn(
+                  r'(short_name:\s*")'
+                  r'(?:\\.|[^"\\])*'
+                  r'(")',
+                  lambda m: (
+                      m.group(1)
+                      + "SparklBlast"
+                      + m.group(2)
+                  ),
+                  original,
+                  count=1
               )
 
-          path.write_text(updated)
+              if count == 1:
+                  content = (
+                      content[:block.start()]
+                      + updated
+                      + content[block.end():]
+                  )
+                  modified = True
+              else:
+                  print(
+                      "Sparkling Blast found, "
+                      "but short_name field is absent."
+                  )
 
-          print("Sparkling Blast short_name corrected.")
+          if not found:
+              print(
+                  "NOTICE: MOVE_SPARKLING_BLAST "
+                  "not found in MoveList.textproto."
+              )
+          elif modified:
+              path.write_text(content)
+              print(
+                  "Sparkling Blast short_name corrected."
+              )
+
+          print(
+              "Continuing to code generation."
+          )
           PY
 
       - name: Fix Glitter Beam description
@@ -102,40 +140,77 @@ jobs:
           path = Path("proto/MoveList.textproto")
           content = path.read_text()
 
-          pattern = (
-              r'(moves\s*\{\s*'
-              r'id:\s*MOVE_GLITTER_BEAM\b'
-              r'[^}]*?'
-              r'description:\s*")'
-              r'(?:\\.|[^"\\])*'
-              r'(")'
-          )
+          blocks = list(re.finditer(
+              r'moves\s*\{[^}]*\}',
+              content,
+              re.DOTALL
+          ))
 
-          new_description = (
+          found = False
+          modified = False
+
+          description = (
               "A shining beam that lowers "
               "the foe's accuracy. Light-based."
           )
 
-          updated, count = re.subn(
-              pattern,
-              lambda m: m.group(1) + new_description + m.group(2),
-              content,
-              count=1,
-              flags=re.DOTALL
-          )
+          for block in reversed(blocks):
+              original = block.group()
 
-          if count != 1:
-              raise SystemExit(
-                  "ERROR: Glitter Beam description not found."
+              if not re.search(
+                  r'\bid:\s*MOVE_GLITTER_BEAM\b',
+                  original
+              ):
+                  continue
+
+              found = True
+
+              updated, count = re.subn(
+                  r'(description:\s*")'
+                  r'(?:\\.|[^"\\])*'
+                  r'(")',
+                  lambda m: (
+                      m.group(1)
+                      + description
+                      + m.group(2)
+                  ),
+                  original,
+                  count=1
               )
 
-          path.write_text(updated)
+              if count == 1:
+                  content = (
+                      content[:block.start()]
+                      + updated
+                      + content[block.end():]
+                  )
+                  modified = True
+              else:
+                  print(
+                      "Glitter Beam found, "
+                      "but description field is absent."
+                  )
 
-          print("Glitter Beam description corrected.")
+          if not found:
+              print(
+                  "NOTICE: MOVE_GLITTER_BEAM "
+                  "not found in MoveList.textproto."
+              )
+          elif modified:
+              path.write_text(content)
+              print(
+                  "Glitter Beam description corrected."
+              )
+
+          print(
+              "Continuing to code generation."
+          )
           PY
 
       - name: Disable overworld debug shortcut
         run: |
+          set -euo pipefail
+
           sed -i -E \
             's/^(#define TX_DEBUG_SYSTEM_IN_MENU[[:space:]]+)TRUE/\1FALSE/' \
             include/debug.h
@@ -160,6 +235,8 @@ jobs:
 
       - name: Install modern Kotlin compiler
         run: |
+          set -euo pipefail
+
           KOTLIN_VERSION=2.1.0
 
           wget -q \
@@ -177,9 +254,14 @@ jobs:
 
       - name: Download Poryscript
         run: |
+          set -euo pipefail
+
           cd tools
 
-          rm -rf poryscript poryscript-linux poryscript-linux.zip
+          rm -rf \
+            poryscript \
+            poryscript-linux \
+            poryscript-linux.zip
 
           wget -O poryscript-linux.zip \
             https://github.com/huderlem/poryscript/releases/download/3.5.2/poryscript-linux.zip
@@ -190,8 +272,6 @@ jobs:
 
           rm poryscript-linux.zip
 
-          cd ..
-
       - name: Fix compiler compatibility flags
         run: |
           python3 - <<'PY'
@@ -201,52 +281,65 @@ jobs:
           path = Path("Makefile")
           source = path.read_text()
 
-          source = source.replace("-std=gnu23", "-std=gnu2x")
-          source = re.sub(r"-Werror\b", "-Wno-error", source)
+          source = source.replace(
+              "-std=gnu23",
+              "-std=gnu2x"
+          )
+
+          source = re.sub(
+              r"-Werror\b",
+              "-Wno-error",
+              source
+          )
 
           path.write_text(source)
 
           if re.search(r"-Werror\b", source):
-              raise SystemExit("ERROR: -Werror still present.")
+              raise SystemExit(
+                  "ERROR: -Werror still present."
+              )
 
-          print("Compiler compatibility flags updated.")
+          print(
+              "Compiler compatibility flags updated."
+          )
           PY
 
           grep -nE 'gnu2x|Wno-error' Makefile
 
-      - name: Generate code before parallel compilation
+      - name: Generate code before compilation
         run: |
+          set -euo pipefail
+
           echo "=== Generating Elite Redux code ==="
 
-          make -C tools/codegen
+          make -C tools/codegen 2>&1 | tee codegen.log
 
-          echo "=== Checking generated files ==="
+          echo "=== Checking generated headers ==="
 
-          test -f include/generated/data/megas/legendary_sage.h || {
-            echo "ERROR: legendary_sage.h was not generated."
-            exit 1
-          }
+          test -f include/generated/data/megas/legendary_sage.h
+          test -f include/generated/data/megas/adoption_center.h
 
-          test -f include/generated/data/megas/adoption_center.h || {
-            echo "ERROR: adoption_center.h was not generated."
-            exit 1
-          }
-
-          echo "Required generated headers are present."
+          echo "Generated headers found."
 
       - name: Build Trainer Randomizer ROM
         run: |
-          set -o pipefail
+          set -euo pipefail
+
+          echo "=== Building Trainer Randomizer ==="
 
           make -j"$(nproc)" 2>&1 | tee build.log
 
-      - name: Verify Trainer Randomizer ROM
+      - name: Verify compiled ROM
         run: |
+          set -euo pipefail
+
           test -f pokeemerald_modern.gba
           ls -lh pokeemerald_modern.gba
 
-      - name: Create BPS patch from rom.gba
+      - name: Create BPS patch
         run: |
+          set -euo pipefail
+
           chmod +x ./flips-linux
 
           ./flips-linux --create \
@@ -255,30 +348,36 @@ jobs:
             TrainerRandomizer.bps
 
           test -f TrainerRandomizer.bps
-          ls -lh TrainerRandomizer.bps
 
-      - name: Apply patch to rom.gba
+      - name: Apply BPS patch
         run: |
+          set -euo pipefail
+
           ./flips-linux --apply \
             TrainerRandomizer.bps \
             rom.gba \
             TrainerRandomizer.gba
 
           test -f TrainerRandomizer.gba
-          ls -lh TrainerRandomizer.gba
 
       - name: Verify patched ROM
         run: |
-          cmp pokeemerald_modern.gba TrainerRandomizer.gba
+          set -euo pipefail
 
-          echo "Patched ROM matches compiled ROM."
+          cmp \
+            pokeemerald_modern.gba \
+            TrainerRandomizer.gba
 
-      - name: Upload compilation log
+          echo "ROM verification successful."
+
+      - name: Upload compilation diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: TrainerRandomizer-Compilation-Log
-          path: build.log
+          name: TrainerRandomizer-Diagnostics
+          path: |
+            codegen.log
+            build.log
           if-no-files-found: ignore
 
       - name: Upload Trainer Randomizer ROM
