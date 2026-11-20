@@ -1,0 +1,292 @@
+
+name: Trainer Randomizer Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      GAME_VERSION: EMERALD
+      GAME_REVISION: 0
+      GAME_LANGUAGE: ENGLISH
+      MODERN: 0
+      COMPARE: 0
+
+    steps:
+      - name: Checkout Trainer Randomizer test branch
+        uses: actions/checkout@v4
+        with:
+          ref: trainer-randomizer-test
+          submodules: false
+
+      - name: Verify test branch and patch
+        run: |
+          set -euo pipefail
+
+          echo "Current branch:"
+          git branch --show-current
+
+          echo "Current commit:"
+          git log -1 --oneline
+
+          echo "Checking Trainer Randomizer files..."
+
+          grep -q 'trainerRandomizedMode' include/global.h
+          grep -q 'SETTING_TRAINER_RANDOMIZER_MODE' src/ui_intro_options.c
+          grep -q 'GetPrototypeTrainerSpecies' src/battle_main.c
+
+          echo "Trainer Randomizer source detected."
+
+      - name: Check base ROM
+        run: |
+          test -f rom.gba || {
+            echo "ERROR: rom.gba was not found in the repository root."
+            exit 1
+          }
+          ls -lh rom.gba
+
+      - name: Checkout proto files
+        run: |
+          rm -rf proto
+
+          git clone --depth 1 --branch upcoming \
+            https://github.com/Elite-Redux/er-config.git proto
+
+          test -d proto
+
+      - name: Fix Sparkling Blast short name
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("proto/MoveList.textproto")
+          content = path.read_text()
+
+          pattern = (
+              r'(moves\s*\{\s*'
+              r'id:\s*MOVE_SPARKLING_BLAST\b'
+              r'[^}]*?'
+              r'short_name:\s*")'
+              r'(?:\\.|[^"\\])*'
+              r'(")'
+          )
+
+          updated, count = re.subn(
+              pattern,
+              lambda m: m.group(1) + "SparklBlast" + m.group(2),
+              content,
+              count=1,
+              flags=re.DOTALL
+          )
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: Sparkling Blast short_name not found."
+              )
+
+          path.write_text(updated)
+
+          print("Sparkling Blast short_name corrected.")
+          PY
+
+      - name: Fix Glitter Beam description
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("proto/MoveList.textproto")
+          content = path.read_text()
+
+          pattern = (
+              r'(moves\s*\{\s*'
+              r'id:\s*MOVE_GLITTER_BEAM\b'
+              r'[^}]*?'
+              r'description:\s*")'
+              r'(?:\\.|[^"\\])*'
+              r'(")'
+          )
+
+          new_description = (
+              "A shining beam that lowers "
+              "the foe's accuracy. Light-based."
+          )
+
+          updated, count = re.subn(
+              pattern,
+              lambda m: m.group(1) + new_description + m.group(2),
+              content,
+              count=1,
+              flags=re.DOTALL
+          )
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: Glitter Beam description not found."
+              )
+
+          path.write_text(updated)
+
+          print("Glitter Beam description corrected.")
+          PY
+
+      - name: Disable overworld debug shortcut
+        run: |
+          sed -i -E \
+            's/^(#define TX_DEBUG_SYSTEM_IN_MENU[[:space:]]+)TRUE/\1FALSE/' \
+            include/debug.h
+
+          grep -Eq \
+            '^#define TX_DEBUG_SYSTEM_IN_MENU[[:space:]]+FALSE' \
+            include/debug.h
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            libpng-dev \
+            gcc-arm-none-eabi \
+            binutils-arm-none-eabi \
+            unzip \
+            wget \
+            openjdk-17-jdk
+
+      - name: Install modern Kotlin compiler
+        run: |
+          KOTLIN_VERSION=2.1.0
+
+          wget -q \
+            "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
+            -O "$RUNNER_TEMP/kotlin.zip"
+
+          mkdir -p "$RUNNER_TEMP/kotlin"
+
+          unzip -q "$RUNNER_TEMP/kotlin.zip" \
+            -d "$RUNNER_TEMP/kotlin"
+
+          echo "$RUNNER_TEMP/kotlin/kotlinc/bin" >> "$GITHUB_PATH"
+
+          "$RUNNER_TEMP/kotlin/kotlinc/bin/kotlinc" -version
+
+      - name: Download Poryscript
+        run: |
+          cd tools
+
+          rm -rf poryscript poryscript-linux poryscript-linux.zip
+
+          wget -O poryscript-linux.zip \
+            https://github.com/huderlem/poryscript/releases/download/3.5.2/poryscript-linux.zip
+
+          unzip -o poryscript-linux.zip
+
+          mv poryscript-linux poryscript
+
+          rm poryscript-linux.zip
+
+          cd ..
+
+      - name: Fix compiler compatibility flags
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("Makefile")
+          source = path.read_text()
+
+          source = source.replace("-std=gnu23", "-std=gnu2x")
+          source = re.sub(r"-Werror\b", "-Wno-error", source)
+
+          path.write_text(source)
+
+          if re.search(r"-Werror\b", source):
+              raise SystemExit("ERROR: -Werror still present.")
+
+          print("Compiler compatibility flags updated.")
+          PY
+
+          grep -nE 'gnu2x|Wno-error' Makefile
+
+      - name: Generate code before parallel compilation
+        run: |
+          echo "=== Generating Elite Redux code ==="
+
+          make -C tools/codegen
+
+          echo "=== Checking generated files ==="
+
+          test -f include/generated/data/megas/legendary_sage.h || {
+            echo "ERROR: legendary_sage.h was not generated."
+            exit 1
+          }
+
+          test -f include/generated/data/megas/adoption_center.h || {
+            echo "ERROR: adoption_center.h was not generated."
+            exit 1
+          }
+
+          echo "Required generated headers are present."
+
+      - name: Build Trainer Randomizer ROM
+        run: |
+          set -o pipefail
+
+          make -j"$(nproc)" 2>&1 | tee build.log
+
+      - name: Verify Trainer Randomizer ROM
+        run: |
+          test -f pokeemerald_modern.gba
+          ls -lh pokeemerald_modern.gba
+
+      - name: Create BPS patch from rom.gba
+        run: |
+          chmod +x ./flips-linux
+
+          ./flips-linux --create \
+            rom.gba \
+            pokeemerald_modern.gba \
+            TrainerRandomizer.bps
+
+          test -f TrainerRandomizer.bps
+          ls -lh TrainerRandomizer.bps
+
+      - name: Apply patch to rom.gba
+        run: |
+          ./flips-linux --apply \
+            TrainerRandomizer.bps \
+            rom.gba \
+            TrainerRandomizer.gba
+
+          test -f TrainerRandomizer.gba
+          ls -lh TrainerRandomizer.gba
+
+      - name: Verify patched ROM
+        run: |
+          cmp pokeemerald_modern.gba TrainerRandomizer.gba
+
+          echo "Patched ROM matches compiled ROM."
+
+      - name: Upload compilation log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrainerRandomizer-Compilation-Log
+          path: build.log
+          if-no-files-found: ignore
+
+      - name: Upload Trainer Randomizer ROM
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrainerRandomizer-Test-ROM
+          path: |
+            TrainerRandomizer.bps
+            TrainerRandomizer.gba
+          if-no-files-found: error
