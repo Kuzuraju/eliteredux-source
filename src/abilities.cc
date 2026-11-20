@@ -348,6 +348,9 @@ int DoesMoveMatchFlag(ON_MODIFY_MOVE_FLAGS) {
         case MOVE_FLAG_KEEN_EDGE:
             if (gBattleMoves[move].flags & FLAG_KEEN_EDGE_BOOST) return TRUE;
             break;
+        case MOVE_FLAG_BONE:
+            if (gBattleMoves[move].flags & FLAG_BONE_BASED) return TRUE;
+            break;
 
         default:
             return FALSE;
@@ -499,24 +502,20 @@ constexpr Ability Impl<ABILITY_SPEED_BOOST> = {
 template <>
 constexpr Ability Impl<ABILITY_COOL_EXIT> = {
     .onEndTurn = +[](ON_END_TURN) -> int {
+        CHECK_NOT(GetSingleUseAbilityCounter(battler, ability))
         CHECK(gVolatileStructs[battler].isFirstTurn != 2)
 
-        switch (GetAbilityState(battler, ability)) {
-            case 0:
-                SetAbilityState(battler, ability, 1);
-                break;
-
-            case 1:
-                gQueuedExtraAttackData[++gQueuedAttackCount] = (struct ExtraAttackActionStruct){
-                    .ability = ability,
-                    .move = MOVE_CHILLY_RECEPTION,
-                    .attacker = battler,
-                    .target = battler,
-                };
-                SetAbilityState(battler, ability, 2);
-                break;
-        }
-
+        if (GetAbilityState(battler, ability)) {
+            gQueuedExtraAttackData[++gQueuedAttackCount] = (struct ExtraAttackActionStruct){
+                .ability = ability,
+                .move = MOVE_CHILLY_RECEPTION,
+                .attacker = battler,
+                .target = battler,
+            };
+            SetAbilityState(battler, ability, 0);
+            SetSingleUseAbilityCounter(battler, ability, TRUE);
+        } else
+            SetAbilityState(battler, ability, 1);
         return NO_ANNOUNCE;
     },
 };
@@ -651,6 +650,39 @@ constexpr Ability Impl<ABILITY_INSOMNIA> = {
 
 template <>
 constexpr Ability Impl<ABILITY_COLOR_CHANGE> = {
+    .onEndTurn = +[](ON_END_TURN) -> int {
+        CHECK(GetAbilityState(battler, ability))
+        SetAbilityState(battler, ability, 0);
+        return FALSE;
+    },
+    .onBeforeAttack = +[](ON_BEFORE_ATTACK) -> int {
+        CHECK(battler != attacker)
+        CHECK_NOT(GetAbilityState(battler, ability))
+
+        Type bestType = gBattleMons[gBattlerTarget].type1;
+        u16 bestModifier = GetTypeModifier(moveType, bestType, attacker, battler);
+
+        for (Type currentType = TYPE_NORMAL; currentType < NUMBER_OF_MON_TYPES; ++currentType) {
+            u16 currentModifier = GetTypeModifier(moveType, currentType, attacker, battler);
+            if (currentModifier < bestModifier) {
+                bestModifier = currentModifier;
+                bestType = currentType;
+            }
+            if (bestModifier == UQ_4_12(0.0)) break;
+        }
+
+        CHECK_NOT(IS_BATTLER_OF_TYPE(battler, bestType))
+        SET_BATTLER_TYPE(battler, bestType)
+        PREPARE_TYPE_BUFFER(gBattleTextBuff1, bestType)
+        BattleScriptCall(BattleScript_ColorChangeActivates);
+        SetAbilityState(battler, ability, 1);
+        return TRUE;
+    },
+    .onBeforeAttackFor = APPLY_ON_TARGET,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_METACHROSIS> = {
     .onBeforeAttack = +[](ON_BEFORE_ATTACK) -> int {
         CHECK(battler != attacker)
         CHECK(CheckAndSetOncePerTurnAbility(battler, ability))
@@ -684,7 +716,7 @@ constexpr Ability Impl<ABILITY_IMMUNITY> = {
             if (moveType == TYPE_POISON) RESISTANCE(.5);
         },
     .onStatusImmune = +[](ON_STATUS_IMMUNE) -> int {
-        CHECK(status & (CHECK_STATUS1 & ~CHECK_SLEEP))
+        CHECK(status & CHECK_POISON)
         return TRUE;
     },
     .breakable = TRUE,
@@ -1098,7 +1130,7 @@ constexpr Ability Impl<ABILITY_HEAVY_METAL> = {
 
 ON_EITHER(FlameBody) {
     CHECK(ShouldApplyOnHitEffect(opponent))
-    CHECK(CanBeBurned(opponent))
+    CHECK(CanBeBurned(battler, opponent))
     int chance = IsMoveMakingContact(move, gBattlerAttacker) ? 30 : 20;
     CHECK(Random() % 100 < chance)
 
@@ -1293,7 +1325,10 @@ template <>
 constexpr Ability Impl<ABILITY_SWARM> = {
     .onOffensiveMultiplier = SWARM_MULTIPLIER(TYPE_BUG),
 };
-
+template <>
+constexpr Ability Impl<ABILITY_ENCHANTED> = {
+    .onOffensiveMultiplier = SWARM_MULTIPLIER(TYPE_FAIRY),
+};
 template <>
 constexpr Ability Impl<ABILITY_ROCK_HEAD> = {
     .breakable = TRUE,
@@ -1971,10 +2006,11 @@ constexpr Ability Impl<ABILITY_TOXIC_BOOST> = {
         +[](ON_OFFENSIVE_MULTIPLIER) {
             if (gBattleMons[battler].status1 & STATUS1_POISON_ANY && IS_MOVE_PHYSICAL(move)) MUL(1.5);
         },
+    .allowTerrainIfAirborne = TERRAIN_TOXIC,
 };
 
 int FlareBoostHandler(u8 battler, AbilityCallType callType) {
-    CHECK(CanBeBurned(battler))
+    CHECK(CanBeBurned(battler, battler))
     CHECK(IsBattlerWeatherAffected(battler, WEATHER_FOG_ANY))
 
     InsertCorrectEndType(callType);
@@ -2302,12 +2338,19 @@ constexpr Ability Impl<ABILITY_CHEEK_POUCH> = {
 
 template <>
 constexpr Ability Impl<ABILITY_PROTEAN> = {
+    .onExit = +[](ON_EXIT) -> int {
+        SetSingleUseAbilityCounter(battler, ability, FALSE);
+        return FALSE;
+    },
     .onBeforeAttack = +[](ON_BEFORE_ATTACK) -> int {
-        CHECK(CheckAndSetOncePerTurnAbility(battler, ability))
-        CHECK_NOT(IS_BATTLER_OF_TYPE(battler, moveType))
+        CHECK_NOT(GetSingleUseAbilityCounter(battler, ability))
+        SetSingleUseAbilityCounter(battler, ability, TRUE);
+
+        CHECK_NOT(gBattleMons[battler].type1 == moveType && gBattleMons[battler].type2 == moveType && gBattleMons[battler].type3 == TYPE_MYSTERY)
         CHECK(move != MOVE_STRUGGLE)
         SET_BATTLER_TYPE(gBattlerAttacker, moveType);
         PREPARE_TYPE_BUFFER(gBattleTextBuff1, moveType);
+
         BattleScriptCall(BattleScript_ProteanActivates);
         return TRUE;
     },
@@ -2422,6 +2465,7 @@ constexpr Ability Impl<ABILITY_GRASS_PELT> = {
         +[](ON_STAT) {
             if (statId == STAT_DEF && IsBattlerTerrainAffected(battler, STATUS_FIELD_GRASSY_TERRAIN)) *stat *= 1.5;
         },
+    .allowTerrainIfAirborne = TERRAIN_GRASSY,
 };
 
 template <>
@@ -2430,6 +2474,7 @@ constexpr Ability Impl<ABILITY_FLOWER_NECKLACE> = {
         +[](ON_STAT) {
             if (statId == STAT_SPDEF && IsBattlerTerrainAffected(battler, STATUS_FIELD_GRASSY_TERRAIN)) *stat *= 1.5;
         },
+    .allowTerrainIfAirborne = TERRAIN_GRASSY,
 };
 
 template <>
@@ -2644,7 +2689,7 @@ constexpr Ability Impl<ABILITY_MERCILESS> = {
         if (gBattleMons[target].status1 & STATUS1_PARALYSIS) return ALWAYS_CRIT;
         if (gBattleMons[target].status1 & STATUS1_BLEED) return ALWAYS_CRIT;
         if (gBattleMons[target].statStages[STAT_SPEED] < DEFAULT_STAT_STAGE) return ALWAYS_CRIT;
-        if (GetBattlerHoldEffect(target, TRUE) == HOLD_EFFECT_IRON_BALL) return ALWAYS_CRIT;
+        if (BattlerHasHoldEffect(target, HOLD_EFFECT_IRON_BALL, TRUE)) return ALWAYS_CRIT;
         return 0;
     },
 };
@@ -2690,6 +2735,22 @@ constexpr Ability Impl<ABILITY_SHIELDS_DOWN> = {
         }
     },
     .unsuppressable = TRUE,
+};
+template <>
+constexpr Ability Impl<ABILITY_PUFFED_OUT> = {
+    .onEntry = Impl<ABILITY_FORECAST>.onEntry,
+    .onEndTurn = Impl<ABILITY_FORECAST>.onEndTurn,
+    .onAttacker = Impl<ABILITY_SHIELDS_DOWN>.onAttacker,
+    .onStatusImmune = +[](ON_STATUS_IMMUNE) -> int {
+        CHECK(status & CHECK_STATUS1)
+        switch (gBattleMons[battler].species) {
+            case SPECIES_MINIOR_REDUX:
+                return TRUE;
+
+            default:
+                return FALSE;
+        }
+    }
 };
 
 template <>
@@ -2800,6 +2861,7 @@ constexpr Ability Impl<ABILITY_SURGE_SURFER> = {
         +[](ON_STAT) {
             if (statId == STAT_SPEED && IsTerrainActive(STATUS_FIELD_ELECTRIC_TERRAIN)) *stat *= 1.5;
         },
+    .allowTerrainIfAirborne = TERRAIN_ELECTRIC,
 };
 
 template <>
@@ -3106,7 +3168,16 @@ constexpr Ability Impl<ABILITY_BEAST_BOOST> = {
 
 template <>
 constexpr Ability Impl<ABILITY_RKS_SYSTEM> = {
-    .onBeforeAttack = Impl<ABILITY_PROTEAN>.onBeforeAttack,
+    // Pre-nerf Protean
+    .onBeforeAttack = +[](ON_BEFORE_ATTACK) -> int {
+        CHECK(CheckAndSetOncePerTurnAbility(battler, ability))
+        CHECK_NOT(gBattleMons[battler].type1 == moveType && gBattleMons[battler].type2 == moveType && gBattleMons[battler].type3 == TYPE_MYSTERY)
+        CHECK(move != MOVE_STRUGGLE)
+        SET_BATTLER_TYPE(gBattlerAttacker, moveType);
+        PREPARE_TYPE_BUFFER(gBattleTextBuff1, moveType);
+        BattleScriptCall(BattleScript_ProteanActivates);
+        return TRUE;
+    },
     .unsuppressable = TRUE,
     .randomizerBanned = TRUE,
     .adaptability = TRUE,
@@ -3207,6 +3278,7 @@ constexpr Ability Impl<ABILITY_DAUNTLESS_SHIELD> = {
 
 template <>
 constexpr Ability Impl<ABILITY_LIBERO> = {
+    .onExit = Impl<ABILITY_PROTEAN>.onExit,
     .onBeforeAttack = Impl<ABILITY_PROTEAN>.onBeforeAttack,
     .omniStab = TRUE,
 };
@@ -3717,7 +3789,7 @@ constexpr Ability Impl<ABILITY_IMMOLATE> = {
         CHECK(IS_BATTLER_OF_TYPE(battler, TYPE_FIRE))
         CHECK(moveType == TYPE_FIRE)
         CHECK(ShouldApplyOnHitEffect(target))
-        CHECK(CanBeBurned(target))
+        CHECK(CanBeBurned(battler, target))
         CHECK(Random() % 10 == 0)
 
         return AbilityStatusEffect(MOVE_EFFECT_BURN);
@@ -3787,6 +3859,17 @@ constexpr Ability Impl<ABILITY_GROUND_SHOCK> = {
         CHECK(defType == TYPE_GROUND)
         CHECK_NOT(*mod)
         *mod = UQ_4_12(.5);
+        return TRUE;
+    },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_EARTH_WIRE> = {
+    .onTypeEffectiveness = +[](ON_TYPE_EFFECTIVENESS) -> int {
+        CHECK(moveType == TYPE_ELECTRIC)
+        CHECK(defType == TYPE_GROUND)
+        CHECK_NOT(*mod)
+        *mod = UQ_4_12(2.0);
         return TRUE;
     },
 };
@@ -4081,7 +4164,20 @@ constexpr Ability Impl<ABILITY_DRAGONSLAYER> = {
 };
 
 template <>
-constexpr Ability Impl<ABILITY_INSECTEATER> = {
+constexpr Ability Impl<ABILITY_HIGH_TEMPERATURE> = {
+    .onOffensiveMultiplier =
+        +[](ON_OFFENSIVE_MULTIPLIER) {
+            if (IS_BATTLER_OF_TYPE(target, TYPE_STEEL)) RESISTANCE(1.5);
+        },
+    .onDefensiveMultiplier =
+        +[](ON_DEFENSIVE_MULTIPLIER) {
+            if (IS_BATTLER_OF_TYPE(attacker, TYPE_STEEL)) MUL(.5);
+        },
+    .breakable = TRUE,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_INSECTIVORE> = {
     .onOffensiveMultiplier =
         +[](ON_OFFENSIVE_MULTIPLIER) {
             if (IS_BATTLER_OF_TYPE(target, TYPE_BUG)) RESISTANCE(1.5);
@@ -4430,6 +4526,7 @@ constexpr Ability Impl<ABILITY_POISON_ABSORB> = {
         BattleScriptPushCursorAndCallback(BattleScript_RainDishActivates);
         return TRUE;
     },
+    .allowTerrainIfAirborne = TERRAIN_TOXIC,
     .redirectType = TYPE_POISON,
     .breakable = TRUE,
 };
@@ -4471,7 +4568,7 @@ constexpr Ability Impl<ABILITY_NORTH_WIND> = {
         int side = GetBattlerSide(battler);
         gSideTimers[side].started.auroraVeil = TRUE;
         gSideStatuses[side] |= SIDE_STATUS_AURORA_VEIL;
-        if (GetBattlerHoldEffect(battler, TRUE) == HOLD_EFFECT_LIGHT_CLAY)
+        if (BattlerHasHoldEffect(battler, HOLD_EFFECT_LIGHT_CLAY, TRUE))
             gSideTimers[side].auroraVeilTimer = SCREEN_DURATION;
         else
             gSideTimers[side].auroraVeilTimer = SCREEN_DURATION_SHORT;
@@ -4521,7 +4618,7 @@ template <>
 constexpr Ability Impl<ABILITY_BONE_ZONE> = {
     .onAfterTypeEffectiveness =
         +[](ON_AFTER_TYPE_EFFECTIVENESS) {
-            if (!(gBattleMoves[move].flags & FLAG_BONE_BASED)) return;
+            if (!DoesMoveMatchFlag(battler, move, moveType, MOVE_FLAG_BONE)) return;
             if (*mod >= UQ_4_12(1.0)) return;
             if (*mod == 0) {
                 *mod = UQ_4_12(1.0);
@@ -4543,7 +4640,7 @@ template <>
 constexpr Ability Impl<ABILITY_SPEED_FORCE> = {
     .onChooseOffensiveStat =
         +[](ON_CHOOSE_OFFENSIVE_STAT) {
-            if (gBattleMoves[move].contact) secondaryAtkStatToUse[STAT_SPEED] += 20;
+            if (IS_MOVE_PHYSICAL(move)) secondaryAtkStatToUse[STAT_SPEED] += 20;
         },
 };
 
@@ -4667,7 +4764,7 @@ template <>
 constexpr Ability Impl<ABILITY_MOMENTUM> = {
     .onChooseOffensiveStat =
         +[](ON_CHOOSE_OFFENSIVE_STAT) {
-            if (gBattleMoves[move].contact) *atkStatToUse = STAT_SPEED;
+            if (IS_MOVE_PHYSICAL(move)) *atkStatToUse = STAT_SPEED;
         },
 };
 
@@ -4847,7 +4944,6 @@ template <>
 constexpr Ability Impl<ABILITY_LOW_BLOW> = {
     .onEntry = +[](ON_ENTRY) -> int { return UseEntryMove(battler, ability, MOVE_FEINT_ATTACK, 40); },
 };
-
 
 template <>
 constexpr Ability Impl<ABILITY_SPECTRALIZE> = {
@@ -5174,7 +5270,7 @@ constexpr Ability Impl<ABILITY_FIRES_WRATH> = {
     .onEntry = UseIntimidateClone,
     .onAttacker = +[](ON_ATTACKER) -> int {
         CHECK(ShouldApplyOnHitEffect(target))
-        CHECK(CanBeBurned(target))
+        CHECK(CanBeBurned(battler, target))
         CHECK_NOT(IsMoveMakingContact(move, battler))
         CHECK(Random() % 100 < 10)
 
@@ -5317,6 +5413,11 @@ constexpr Ability Impl<ABILITY_FOREST_RAGE> = {
 };
 
 template <>
+constexpr Ability Impl<ABILITY_CRESTOFHOPE> = {
+    .onOffensiveMultiplier = BOOSTED_SWARM_MULTIPLIER(TYPE_FAIRY),
+};
+
+template <>
 constexpr Ability Impl<ABILITY_PRIMAL_MAW> = {
     .onParentalBond = +[](ON_PARENTAL_BOND) -> MultihitType {
         CHECK(gBattleMoves[move].flags & FLAG_STRONG_JAW_BOOST)
@@ -5349,6 +5450,97 @@ constexpr Ability Impl<ABILITY_GIFTED_MIND> = {
         },
     .onAfterTypeEffectivenessFor = APPLY_ON_TARGET,
     .breakable = TRUE,
+};
+
+// The user's moves of the type deal `percent`% of their damage, like Transistor or Water Bubble
+template <Type type, int percent>
+constexpr Ability TypePowerBoost = {
+    .onOffensiveMultiplier =
+        +[](ON_OFFENSIVE_MULTIPLIER) {
+            if (moveType == type) MUL(percent / 100.0);
+        },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_TIDAL_FORCE> = TypePowerBoost<TYPE_WATER, 200>;
+
+template <>
+constexpr Ability Impl<ABILITY_FIGHT_CLUB> = TypePowerBoost<TYPE_FIGHTING, 200>;
+
+template <>
+constexpr Ability Impl<ABILITY_MARTIAL_ARTS> = {
+    .onOffensiveMultiplier =
+        +[](ON_OFFENSIVE_MULTIPLIER) {
+            if (IsIronFistBoosted(battler, move) || IsStrikerBoosted(battler, move)) MUL(1.5);
+        },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_BONE_MASTER> = {
+    .onModifyMoveFlags = +[](ON_MODIFY_MOVE_FLAGS) -> int { return flag == MOVE_FLAG_BONE; },
+};
+
+// The crit KO itself is in Cmd_damagecalc
+template <>
+constexpr Ability Impl<ABILITY_EXECUTIONER> = {};
+
+template <>
+constexpr Ability Impl<ABILITY_PERFECT_PITCH> = {
+    .onCrit = +[](ON_CRIT) -> int {
+        CHECK(IsSoundMove(battler, move))
+        return ALWAYS_CRIT;
+    },
+};
+
+// The rooms are turned off in IsTrickRoomActive and the others, like Clueless
+template <>
+constexpr Ability Impl<ABILITY_ROOM_BREAKER> = {};
+
+// Unerring for every move
+template <>
+constexpr Ability Impl<ABILITY_TRUE_AIM> = {
+    .onAccuracy = +[](ON_ACCURACY) -> AccuracyPriority { return ACCURACY_HITS_IF_POSSIBLE; },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_RUTHLESS> = {
+    .onOffensiveMultiplier =
+        +[](ON_OFFENSIVE_MULTIPLIER) {
+            if (HasAnyStatusOrAbility(target)) MUL(1.25);
+        },
+    .onChooseDefensiveStat = Impl<ABILITY_EXPLOIT_WEAKNESS>.onChooseDefensiveStat,
+};
+
+// Exploit Weakness against every foe
+template <>
+constexpr Ability Impl<ABILITY_WEAK_SPOT> = {
+    .onChooseDefensiveStat =
+        +[](ON_CHOOSE_DEFENSIVE_STAT) {
+            u32 def = CalculateStat(target, STAT_DEF, 0, move, FALSE, ignoreDefensiveStatBoosts, battlerUnaware, FALSE);
+            u32 spDef = CalculateStat(target, STAT_SPDEF, 0, move, FALSE, ignoreDefensiveStatBoosts, battlerUnaware, FALSE);
+            if (def < spDef)
+                *defStatToUse = STAT_DEF;
+            else if (spDef < def)
+                *defStatToUse = STAT_SPDEF;
+        },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_EMPTY_HANDED> = {
+    .onOffensiveMultiplier =
+        +[](ON_OFFENSIVE_MULTIPLIER) {
+            if (!gBattleMons[battler].item) MUL(1.5);
+        },
+};
+
+// Gifted Mind's accuracy part
+template <>
+constexpr Ability Impl<ABILITY_UNERRING> = {
+    .onAccuracy = +[](ON_ACCURACY) -> AccuracyPriority {
+        CHECK(IS_MOVE_STATUS(move))
+        return ACCURACY_HITS_IF_POSSIBLE;
+    },
+    .onMoldBreaker = +[](ON_MOLD_BREAKER) -> int { return IS_MOVE_STATUS(move); },
 };
 
 template <>
@@ -5491,7 +5683,7 @@ constexpr Ability Impl<ABILITY_ELEMENTAL_CHARGE> = {
                 return TRUE;
 
             case TYPE_FIRE:
-                CHECK(CanBeBurned(target))
+                CHECK(CanBeBurned(battler, target))
 
                 AbilityStatusEffect(MOVE_EFFECT_BURN);
                 return TRUE;
@@ -5692,10 +5884,11 @@ template <>
 constexpr Ability Impl<ABILITY_PRISMATIC_FUR> = {
     .onDefensiveMultiplier = +[](ON_DEFENSIVE_MULTIPLIER) { MUL(.5); },
     .onBeforeAttack = +[](ON_BEFORE_ATTACK) -> int {
-        if (battler == attacker && Impl<ABILITY_PROTEAN>.onBeforeAttack(DELEGATE_BEFORE_ATTACK)) return TRUE;
-        return Impl<ABILITY_COLOR_CHANGE>.onBeforeAttack(DELEGATE_BEFORE_ATTACK);
+        if (battler == attacker && Impl<ABILITY_RKS_SYSTEM>.onBeforeAttack(DELEGATE_BEFORE_ATTACK)) return TRUE;
+        return Impl<ABILITY_METACHROSIS>.onBeforeAttack(DELEGATE_BEFORE_ATTACK);
     },
     .onBeforeAttackFor = APPLY_ON_ATTACKER_OR_TARGET,
+    .randomizerBanned = TRUE,
     .omniStab = TRUE,
 };
 
@@ -5865,10 +6058,9 @@ constexpr Ability Impl<ABILITY_ARCHMAGE> = {
 
             case TYPE_FIRE:
                 CHECK(IsBattlerAlive(target))
-                CHECK(CanBeBurned(target))
+                CHECK(CanBeBurned(battler, target))
 
                 AbilityStatusEffect(MOVE_EFFECT_BURN);
-                ;
                 return TRUE;
 
             case TYPE_ELECTRIC:
@@ -5945,8 +6137,11 @@ constexpr Ability Impl<ABILITY_ARCHMAGE> = {
                 return TRUE;
 
             case TYPE_BUG:
-                // TODO: Set sticky web
-                break;
+                CHECK_NOT(gSideStatuses[GetBattlerSide(target)] & SIDE_STATUS_STICKY_WEB)
+
+                gSideStatuses[GetBattlerSide(target)] |= (SIDE_STATUS_STICKY_WEB);
+                BattleScriptCall(BattleScript_Archmage_Effect_Type_Bug);
+                return TRUE;
 
             case TYPE_DRAGON:
                 CHECK(IsBattlerAlive(target))
@@ -6189,6 +6384,7 @@ constexpr Ability Impl<ABILITY_GENERATOR> = {
         SetSingleUseAbilityCounter(battler, ability, FALSE);
         return FALSE;
     },
+    .allowTerrainIfAirborne = TERRAIN_ELECTRIC,
     .persistent = TRUE,
 };
 
@@ -6655,7 +6851,7 @@ template <>
 constexpr Ability Impl<ABILITY_FLAMING_JAWS> = {
     .onAttacker = +[](ON_ATTACKER) -> int {
         CHECK(ShouldApplyOnHitEffect(target))
-        CHECK(CanBeBurned(target))
+        CHECK(CanBeBurned(battler, target))
         CHECK(gBattleMoves[move].flags & FLAG_STRONG_JAW_BOOST)
         CHECK(Random() % 2)
 
@@ -6927,7 +7123,7 @@ int ProtosynthesisHandler(AbilityEnum ability, u8 battler, AbilityCallType callT
 
     if (state.source == PARADOX_WEATHER_ACTIVE && !IsWeatherActive(WEATHER_SUN_ANY)) {
         InsertCorrectEndType(callType);
-        if (GetBattlerHoldEffect(battler, TRUE) == HOLD_EFFECT_BOOSTER_ENERGY) {
+        if (BattlerHasHoldEffect(battler, HOLD_EFFECT_BOOSTER_ENERGY, TRUE)) {
             // Push this first so it resolves last
             ParadoxBoost boost = {.source = PARADOX_BOOSTER_ENERGY, .statId = GetHighestStatId(battler, TRUE)};
             SetAbilityStateAs(battler, ability, (AbilityStates){.paradoxBoost = boost});
@@ -6941,7 +7137,7 @@ int ProtosynthesisHandler(AbilityEnum ability, u8 battler, AbilityCallType callT
         return TRUE;
     }
 
-    if (state.source == PARADOX_BOOST_NOT_ACTIVE && GetBattlerHoldEffect(battler, TRUE) == HOLD_EFFECT_BOOSTER_ENERGY) {
+    if (state.source == PARADOX_BOOST_NOT_ACTIVE && BattlerHasHoldEffect(battler, HOLD_EFFECT_BOOSTER_ENERGY, TRUE)) {
         InsertCorrectEndType(callType);
         ParadoxBoost boost = {.source = PARADOX_BOOSTER_ENERGY, .statId = GetHighestStatId(battler, TRUE)};
         SetAbilityStateAs(battler, ability, (AbilityStates){.paradoxBoost = boost});
@@ -6983,7 +7179,7 @@ int QuarkDriveHandler(AbilityEnum ability, u8 battler, AbilityCallType callType)
 
     if (state.source == PARADOX_WEATHER_ACTIVE && !IsTerrainActive(STATUS_FIELD_ELECTRIC_TERRAIN)) {
         InsertCorrectEndType(callType);
-        if (GetBattlerHoldEffect(battler, TRUE) == HOLD_EFFECT_BOOSTER_ENERGY) {
+        if (BattlerHasHoldEffect(battler, HOLD_EFFECT_BOOSTER_ENERGY, TRUE)) {
             // Push this first so it resolves last
             ParadoxBoost boost = {.source = PARADOX_BOOSTER_ENERGY, .statId = GetHighestStatId(battler, TRUE)};
             SetAbilityStateAs(battler, ability, (AbilityStates){.paradoxBoost = boost});
@@ -6997,7 +7193,7 @@ int QuarkDriveHandler(AbilityEnum ability, u8 battler, AbilityCallType callType)
         return TRUE;
     }
 
-    if (state.source == PARADOX_BOOST_NOT_ACTIVE && GetBattlerHoldEffect(battler, TRUE) == HOLD_EFFECT_BOOSTER_ENERGY) {
+    if (state.source == PARADOX_BOOST_NOT_ACTIVE && BattlerHasHoldEffect(battler, HOLD_EFFECT_BOOSTER_ENERGY, TRUE)) {
         InsertCorrectEndType(callType);
         ParadoxBoost boost = {.source = PARADOX_BOOSTER_ENERGY, .statId = GetHighestStatId(battler, TRUE)};
         SetAbilityStateAs(battler, ability, (AbilityStates){.paradoxBoost = boost});
@@ -7014,6 +7210,7 @@ constexpr Ability Impl<ABILITY_QUARK_DRIVE> = {
     .onEntry = +[](ON_ENTRY) -> int { return QuarkDriveHandler(ability, battler, ABILITY_BS_PUSH_CURSOR_AND_CALLBACK); },
     .onTerrain = +[](ON_TERRAIN) -> int { return QuarkDriveHandler(ability, battler, ABILITY_BS_CALL); },
     .onStat = Impl<ABILITY_PROTOSYNTHESIS>.onStat,
+    .allowTerrainIfAirborne = TERRAIN_ELECTRIC,
 };
 
 template <>
@@ -7033,7 +7230,7 @@ template <>
 constexpr Ability Impl<ABILITY_IMPULSE> = {
     .onChooseOffensiveStat =
         +[](ON_CHOOSE_OFFENSIVE_STAT) {
-            if (!(gBattleMoves[move].contact)) *atkStatToUse = STAT_SPEED;
+            if (IS_MOVE_SPECIAL(move)) *atkStatToUse = STAT_SPEED;
         },
 };
 
@@ -7409,15 +7606,7 @@ constexpr Ability Impl<ABILITY_PERMAFROST_CLONE> = {
 
 template <>
 constexpr Ability Impl<ABILITY_GALLANTRY> = {
-    .onEntry = +[](ON_ENTRY) -> int {
-        CHECK_NOT(GetSingleUseAbilityCounter(battler, ability))
-
-        BattleScriptPushCursorAndCallback(BattleScript_BattlerHasASingleNoDamageHit);
-        return TRUE;
-    },
-    .noDamageHits = 1,
-    .breakable = TRUE,
-    .persistent = TRUE,
+    .onEntry = +[](ON_ENTRY) -> int { return UseEntryMove(battler, ability, MOVE_KINGS_SHIELD, 0); },
 };
 
 template <>
@@ -7487,6 +7676,7 @@ constexpr Ability Impl<ABILITY_CELESTIAL_BLESSING> = {
         BattleScriptPushCursorAndCallback(BattleScript_SelfSufficientActivates);
         return TRUE;
     },
+    .allowTerrainIfAirborne = TERRAIN_MISTY,
 };
 
 template <>
@@ -7498,7 +7688,7 @@ template <>
 constexpr Ability Impl<ABILITY_MOLTEN_BLADES> = {
     .onAttacker = +[](ON_ATTACKER) -> int {
         CHECK(ShouldApplyOnHitEffect(target))
-        CHECK(CanBeBurned(target))
+        CHECK(CanBeBurned(battler, target))
         CHECK(DoesMoveMatchFlag(battler, move, moveType, MOVE_FLAG_KEEN_EDGE))
         CHECK(Random() % 100 < 20)
 
@@ -7647,6 +7837,7 @@ constexpr Ability Impl<ABILITY_FLOURISH> = {
         +[](ON_OFFENSIVE_MULTIPLIER) {
             if (moveType == TYPE_GRASS && IsBattlerTerrainAffected(battler, STATUS_FIELD_GRASSY_TERRAIN)) MUL(1.5);
         },
+    .allowTerrainIfAirborne = TERRAIN_GRASSY,
 };
 
 template <>
@@ -8010,7 +8201,7 @@ constexpr Ability Impl<ABILITY_PIERCING_SOLO> = {
 
 template <>
 constexpr Ability Impl<ABILITY_RHYTHMIC> = {
-    .onOffensiveMultiplier = +[](ON_OFFENSIVE_MULTIPLIER) { MulModifier(modifier, UQ_4_12(1.0) + 10 * gBattleStruct->sameMoveTurns[battler]); },
+    .onOffensiveMultiplier = +[](ON_OFFENSIVE_MULTIPLIER) { MulModifier(modifier, UQ_4_12(1.0) + UQ_4_12(0.1) * gBattleStruct->sameMoveTurns[battler]); },
 };
 
 template <>
@@ -8079,7 +8270,7 @@ constexpr Ability Impl<ABILITY_ARC_FLASH> = {
     },
     .onDefender = +[](ON_DEFENDER) -> int {
         CHECK(ShouldApplyOnHitEffect(attacker))
-        CHECK(CanBeBurned(attacker))
+        CHECK(CanBeBurned(battler, attacker))
         CHECK(Random() % 2)
 
         AbilityStatusEffect(MOVE_EFFECT_BURN | MOVE_EFFECT_AFFECTS_USER);
@@ -8123,7 +8314,7 @@ constexpr Ability Impl<ABILITY_VENOBLAZE_PINCERS> = {
 
         switch (Random() % 2) {
             case 0:
-                CHECK(CanBeBurned(target));
+                CHECK(CanBeBurned(battler, target));
                 AbilityStatusEffect(MOVE_EFFECT_BURN);
                 return TRUE;
 
@@ -8288,8 +8479,9 @@ constexpr Ability Impl<ABILITY_SNOWY_WRATH> = {
 
 template <>
 constexpr Ability Impl<ABILITY_PATTERN_CHANGE> = {
+    // TODO: Change to pre-nerf Protean with Protean's onEndTurn when bug is fixed
     .onEndTurn = Impl<ABILITY_SHED_SKIN>.onEndTurn,
-    .onBeforeAttack = Impl<ABILITY_PROTEAN>.onBeforeAttack,
+    .onBeforeAttack = Impl<ABILITY_RKS_SYSTEM>.onBeforeAttack,
     .omniStab = TRUE,
 };
 
@@ -9034,6 +9226,16 @@ constexpr Ability Impl<ABILITY_BLADE_DANCE> = {
     },
 };
 
+template <>
+constexpr Ability Impl<ABILITY_SUN_DANCE> = {
+    .onAttacker = +[](ON_ATTACKER) -> int {
+        CHECK(IsDance(battler, move))
+        CHECK(AdjustFollowupMoveTarget(battler, &target, move, FOLLOWUP_ALLOW_SELF))
+
+        return UseAttackerFollowUpMove(battler, target, ability, MOVE_SUNNY_DAY, 0);
+    },
+};
+
 int ApeShiftHandler(u8 battler, AbilityCallType callType) {
     CHECK_NOT(gBattleMons[battler].status2 & STATUS2_TRANSFORMED)
     CHECK(gBattleMons[battler].species == SPECIES_SLAKING_MEGA || gBattleMons[battler].species == SPECIES_SLAKING_MEGA_APE_SHIFT)
@@ -9182,7 +9384,7 @@ constexpr Ability Impl<ABILITY_DESOLATE_SUN> = {
 
 ON_EITHER(Daybreak) {
     CHECK(ShouldApplyOnHitEffect(opponent))
-    CHECK(CanBeBurned(opponent))
+    CHECK(CanBeBurned(battler, opponent))
     CHECK(IsMoveMakingContact(move, gBattlerAttacker))
 
     AbilityStatusEffectSafe(MOVE_EFFECT_BURN, battler, opponent);
@@ -9857,7 +10059,7 @@ template <>
 constexpr Ability Impl<ABILITY_BLUR> = {
     .onChooseDefensiveStat =
         +[](ON_CHOOSE_DEFENSIVE_STAT) {
-            if (IsMoveMakingContact(move, gBattlerAttacker)) *defStatToUse = STAT_SPEED;
+            if (IS_MOVE_PHYSICAL(move)) *defStatToUse = STAT_SPEED;
         },
     .onChooseDefensiveStatFor = APPLY_ON_TARGET,
 };
@@ -9872,7 +10074,7 @@ template <>
 constexpr Ability Impl<ABILITY_ELUDE> = {
     .onChooseDefensiveStat =
         +[](ON_CHOOSE_DEFENSIVE_STAT) {
-            if (!IsMoveMakingContact(move, gBattlerAttacker)) *defStatToUse = STAT_SPEED;
+            if (IS_MOVE_SPECIAL(move)) *defStatToUse = STAT_SPEED;
         },
     .onChooseDefensiveStatFor = APPLY_ON_TARGET,
 };
@@ -10161,6 +10363,7 @@ constexpr Ability Impl<ABILITY_BIOFILM> = {
         +[](ON_STAT) {
             if (statId == STAT_SPDEF && IsTerrainActive(STATUS_FIELD_TOXIC_TERRAIN)) *stat *= 1.5;
         },
+    .allowTerrainIfAirborne = TERRAIN_TOXIC
 };
 
 template <>
@@ -10332,7 +10535,7 @@ constexpr Ability Impl<ABILITY_MOLTEN_COAT> = {
     .onAttacker = +[](ON_ATTACKER) -> int {
         CHECK(ShouldApplyOnHitEffect(target))
         CHECK(moveType == TYPE_ROCK)
-        CHECK(CanBeBurned(target))
+        CHECK(CanBeBurned(battler, target))
         CHECK(Random() % 2)
 
         AbilityStatusEffectSafe(MOVE_EFFECT_BURN, battler, target);
@@ -10523,7 +10726,7 @@ constexpr Ability Impl<ABILITY_FIRE_ASPECT> = {
     .onAttacker = +[](ON_ATTACKER) -> int {
         CHECK(ShouldApplyOnHitEffect(target))
         CHECK(moveType == TYPE_FIRE)
-        CHECK(CanBeBurned(target))
+        CHECK(CanBeBurned(battler, target))
 
         AbilityStatusEffectSafe(MOVE_EFFECT_BURN, battler, target);
         return TRUE;
@@ -10644,7 +10847,7 @@ constexpr Ability Impl<ABILITY_ENERGY_TAP> = {
         CHECK_NOT(BATTLER_MAX_HP(battler))
         CHECK(CanBattlerHeal(battler))
 
-        gBattleMoveDamage = -gHpDealt / 8;
+        gBattleMoveDamage = -gHpDealt / 6;
         if (!gBattleMoveDamage) gBattleMoveDamage = -1;
         BattleScriptCall(BattleScript_HydroCircuitAbsorbEffectActivated);
         return TRUE;
@@ -10954,6 +11157,7 @@ constexpr Ability Impl<ABILITY_BACKUP_POWER> = {
         CHECK(IsTerrainActive(STATUS_FIELD_ELECTRIC_TERRAIN))
         return B_MSG_BACKUP_POWER;
     },
+    .allowTerrainIfAirborne = TERRAIN_ELECTRIC,
     .persistent = TRUE,
 };
 
@@ -11030,7 +11234,7 @@ template <>
 constexpr Ability Impl<ABILITY_LASER_DRILL> = {
     .onAttacker = +[](ON_ATTACKER) -> int {
         CHECK(ShouldApplyOnHitEffect(target))
-        CHECK(CanBeBurned(target))
+        CHECK(CanBeBurned(battler, target))
         CHECK(gBattleMoves[move].hornBased)
         CHECK(Random() % 2)
 
@@ -11047,7 +11251,7 @@ constexpr Ability Impl<ABILITY_LIGHT_SABER> = {
         CHECK(Random() % 2)
         switch (Random() % 4) {
             case 0:
-                CHECK(CanBeBurned(target))
+                CHECK(CanBeBurned(battler, target))
                 return AbilityStatusEffect(MOVE_EFFECT_BURN);
 
             case 1:
@@ -11340,7 +11544,7 @@ constexpr Ability Impl<ABILITY_WINGS_OF_PESTILENCE> = {
 template <>
 constexpr Ability Impl<ABILITY_ZEN_GARDEN> = {
     .onEntry = +[](ON_ENTRY) -> int {
-        if (GetBattlerHoldEffect(battler, TRUE) == HOLD_EFFECT_SEEDS) {
+        if (BattlerHasHoldEffect(battler, HOLD_EFFECT_SEEDS, TRUE)) {
             switch (ItemId_GetSecondaryId(gBattleMons[battler].item)) {
                 case HOLD_EFFECT_PARAM_GRASSY_TERRAIN:
                     return Impl<ABILITY_GRASSY_SURGE>.onEntry(DELEGATE_ENTRY);
@@ -11571,6 +11775,15 @@ constexpr Ability Impl<ABILITY_HAND_BARNACLES> = {
 };
 
 template <>
+constexpr Ability Impl<ABILITY_BIG_APPLE> = {
+    .onParentalBond = Impl<ABILITY_MULTI_HEADED>.onParentalBond,
+    .onStatusImmune = Impl<ABILITY_AROMA_VEIL>.onStatusImmune,
+    .onStatusImmuneFor = APPLY_ON_ALLY,
+    .breakable = TRUE,
+    .resistsFortKnox = TRUE,
+};
+
+template <>
 constexpr Ability Impl<ABILITY_LEPIDOPTERAN> = {
     .onOffensiveMultiplier = Impl<ABILITY_SWARM>.onOffensiveMultiplier,
     .breakable = TRUE,
@@ -11766,20 +11979,27 @@ constexpr Ability Impl<ABILITY_OVERCAST> = {
 
 template <>
 constexpr Ability Impl<ABILITY_STEADFAST> = {
+    .onStatusImmune = +[](ON_STATUS_IMMUNE) -> int {
+        CHECK(status == CHECK_STATUS1)
+        return TRUE;
+    },
     .steadfast = TRUE,
 };
 
 template <>
 constexpr Ability Impl<ABILITY_SUPERHEAVY> = {
+    .onStatusImmune = Impl<ABILITY_STEADFAST>.onStatusImmune,
     .suctionCups = TRUE,
     .steadfast = TRUE,
 };
 
 template <>
 constexpr Ability Impl<ABILITY_WATERBORNE> = {
-    .onEntry = Impl<ABILITY_AQUATIC>.onEntry,
+    .onAttacker = Impl<ABILITY_HYDRATE>.onAttacker,
+    ATE_ABILITY(TYPE_WATER),
+    .onAfterTypeEffectiveness = Impl<ABILITY_HYDRATE>.onAfterTypeEffectiveness,
+    .onAfterTypeEffectivenessFor = APPLY_ON_TARGET,
     .adaptability = TRUE,
-    .addsType = Impl<ABILITY_AQUATIC>.addsType,
 };
 
 template <>
@@ -12466,8 +12686,9 @@ constexpr Ability Impl<ABILITY_SINISTER_CLAWS> = {
 template <>
 constexpr Ability Impl<ABILITY_PETAL_SHIELD> = {
     .onEntry = +[](ON_ENTRY) -> int {
-        CHECK(gBattleMons[battler].statStages[STAT_DEF] < MAX_STAT_STAGE)
-        gBattleMons[battler].statStages[STAT_DEF] = MAX_STAT_STAGE;
+        CHECK(CanRaiseStat(battler, STAT_DEF))
+
+        SetStatChanger(STAT_DEF, 3);
         return SwitchInAnnounce(B_MSG_SWITCHIN_PETAL_SHIELD);
     },
     .onDefender = +[](ON_DEFENDER) -> int {
@@ -12495,7 +12716,7 @@ constexpr Ability Impl<ABILITY_GHOST_PEPPER> = {
     .onAttacker = +[](ON_ATTACKER) -> int {
         CHECK(ShouldApplyOnHitEffect(target))
         CHECK(moveType == TYPE_GRASS)
-        CHECK(CanBeBurned(target))
+        CHECK(CanBeBurned(battler, target))
         CHECK(Random() % 100 < 30)
 
         return AbilityStatusEffect(MOVE_EFFECT_BURN);
@@ -12609,12 +12830,14 @@ constexpr Ability Impl<ABILITY_JUNGLE_FEVER> = {
         +[](ON_STAT) {
             if (statId == STAT_SPEED && IsTerrainActive(STATUS_FIELD_GRASSY_TERRAIN)) *stat *= 1.5;
         },
+    .allowTerrainIfAirborne = TERRAIN_GRASSY,
 };
 
 template <>
 constexpr Ability Impl<ABILITY_KING_OF_THE_JUNGLE> = {
     .onEntry = Impl<ABILITY_GRASSY_SURGE>.onEntry,
     .onInfiltrate = Impl<ABILITY_INFILTRATOR>.onInfiltrate,
+    .allowTerrainIfAirborne = TERRAIN_GRASSY,
 };
 
 template <>
@@ -12685,7 +12908,7 @@ template <>
 constexpr Ability Impl<ABILITY_SPICY_SPRAY> = {
     .onDefender = +[](ON_DEFENDER) -> int {
         CHECK(ShouldApplyOnHitEffect(attacker))
-        CHECK(CanBeBurned(attacker))
+        CHECK(CanBeBurned(battler, attacker))
 
         AbilityStatusEffectSafe(MOVE_EFFECT_BURN, battler, attacker);
         return TRUE;
@@ -12761,8 +12984,9 @@ constexpr Ability Impl<ABILITY_THERMALDWELLER> = {
 template <>
 constexpr Ability Impl<ABILITY_LETHALTOUCH> = {
     .onAttacker = Impl<ABILITY_TOXIC_CHAIN>.onAttacker,
-    .onDefender =
-        +[](ON_DEFENDER) -> int { return Impl<ABILITY_DOUBLE_IRON_BARBS>.onDefender(DELEGATE_DEFENDER) | Impl<ABILITY_TOXIC_CHAIN>.onDefender(DELEGATE_DEFENDER); },
+    .onDefender = +[](ON_DEFENDER) -> int {
+        return Impl<ABILITY_DOUBLE_IRON_BARBS>.onDefender(DELEGATE_DEFENDER) | Impl<ABILITY_TOXIC_CHAIN>.onDefender(DELEGATE_DEFENDER);
+    },
 };
 
 template <>
@@ -12805,27 +13029,29 @@ constexpr Ability Impl<ABILITY_SOUR_APPLE> = {
     .onStatusImmune = Impl<ABILITY_AROMA_VEIL>.onStatusImmune,
     .onStatusImmuneFor = APPLY_ON_ALLY,
     .breakable = TRUE,
+    .levitate = TRUE,
 };
 
 template <>
 constexpr Ability Impl<ABILITY_SEARCHLIGHT> = {
     .onEntry = Impl<ABILITY_FRISK>.onEntry,
+    .onAttacker = Impl<ABILITY_ILLUMINATE>.onAttacker,
     .onAccuracy = Impl<ABILITY_ILLUMINATE>.onAccuracy,
 };
 
 template <>
 constexpr Ability Impl<ABILITY_LIGHT_WIELD> = {
-        .onEntry = +[](ON_ENTRY) -> int {
+    .onEntry = +[](ON_ENTRY) -> int {
         CHECK_NOT(gSideStatuses[GetBattlerSide(battler)] & SIDE_STATUS_LIGHTSCREEN && !BattlerHasAbility(battler, ABILITY_SCREEN_CLEANER, FALSE))
 
         int side = GetBattlerSide(battler);
         gSideTimers[side].started.lightscreen = TRUE;
         gSideStatuses[side] |= SIDE_STATUS_LIGHTSCREEN;
-        if (GetBattlerHoldEffect(battler, TRUE) == HOLD_EFFECT_LIGHT_CLAY)
+        if (BattlerHasHoldEffect(battler, HOLD_EFFECT_LIGHT_CLAY, TRUE))
             gSideTimers[side].lightscreenTimer = SCREEN_DURATION;
         else
             gSideTimers[side].lightscreenTimer = SCREEN_DURATION_SHORT;
-        BattleScriptPushCursorAndCallback(BattleScript_NorthWindActivated);
+        BattleScriptPushCursorAndCallback(BattleScript_LightWieldActivated);
 
         return TRUE;
     },
@@ -12835,19 +13061,317 @@ template <>
 constexpr Ability Impl<ABILITY_PHOTOKINESIS> = {
     .onOffensiveMultiplier =
         +[](ON_OFFENSIVE_MULTIPLIER) {
-            if(gBattleMoves[move].light) MUL(1.3);
+            if (gBattleMoves[move].light) MUL(1.3);
         },
 };
 
 template <>
 constexpr Ability Impl<ABILITY_PHOTON_BURST> = {
     .onOffensiveMultiplier = Impl<ABILITY_PHOTOKINESIS>.onOffensiveMultiplier,
-    .onChooseDefensiveStat = 
-    +[](ON_CHOOSE_DEFENSIVE_STAT) {
-        if (gBattleMoves[move].light) *defStatToUse = STAT_DEF;
+    .onChooseDefensiveStat =
+        +[](ON_CHOOSE_DEFENSIVE_STAT) {
+            if (gBattleMoves[move].light) *defStatToUse = STAT_DEF;
+        },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_RIPPLING_PUNCH> = {
+    .onAttacker = +[](ON_ATTACKER) -> int {
+        CHECK(ShouldApplyOnHitEffect(target))
+        CHECK(gBattleMoves[move].flags & FLAG_SOUND)
+        CHECK(Random() % 2)
+        CHECK(StatLowerableOrMirrorArmor(target, STAT_ATK))
+
+        return AbilityStatusEffect(MOVE_EFFECT_ATK_MINUS_1);
+    },
+    .onModifyMoveFlags = +[](ON_MODIFY_MOVE_FLAGS) -> int {
+        CHECK(flag == MOVE_FLAG_SOUND)
+        return gBattleMoves[move].flags & FLAG_IRON_FIST_BOOST;
     },
 };
 
+template <>
+constexpr Ability Impl<ABILITY_CACKLING> = {
+    .onEntry = +[](ON_ENTRY) -> int {
+        int counter = GetSingleUseAbilityCounter(battler, ability);
+        CHECK(counter < 2)
+        CHECK(UseEntryMove(battler, ability, MOVE_EERIE_LAUGH, 0))
+
+        SetSingleUseAbilityCounter(battler, ability, counter + 1);
+        return TRUE;
+    },
+    .persistent = TRUE,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_FRESH_SNOWFALL> = {
+    .onDefender = +[](ON_DEFENDER) -> int {
+        CHECK(IS_MOVE_SPECIAL(move))
+
+        UseOutOfTurnAttack(battler, attacker, ability, MOVE_POWDER_SNOW, 30);
+        return FALSE;
+    },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_STICKY_SITUATION> = {
+    .onAttacker = +[](ON_ATTACKER) -> int {
+        CHECK(ShouldApplyOnHitEffect(target))
+        CHECK(moveType == TYPE_BUG)
+        CHECK(StatLowerableOrMirrorArmor(target, STAT_SPEED))
+
+        AbilityStatusEffectSafe(MOVE_EFFECT_SPD_MINUS_1, battler, target);
+        return TRUE;
+    },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_BIOLUMINESCENT> = {
+    .onEntry = Impl<ABILITY_LIGHTNING_BORN>.onEntry,
+    .onAccuracy = Impl<ABILITY_ILLUMINATE>.onAccuracy,
+    .addsType = TYPE_ELECTRIC,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_BLINKING_FLASH> = {
+    .onAttacker = +[](ON_ATTACKER) -> int {
+        CHECK(ShouldApplyOnHitEffect(target))
+        CHECK(gBattleMoves[move].light)
+        CHECK(Random() % 100 < 25)
+        CHECK(StatLowerableOrMirrorArmor(target, STAT_ACC))
+
+        return AbilityStatusEffectSafe(MOVE_EFFECT_ACC_MINUS_1, battler, target);
+    },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_BRAIN_FREEZE> = {
+    .onAttacker = +[](ON_ATTACKER) -> int {
+        CHECK(ShouldApplyOnHitEffect(target))
+        CHECK(moveType == TYPE_PSYCHIC)
+        CHECK(CanGetFrostbite(target))
+        CHECK(Random() % 100 < 30)
+
+        return AbilityStatusEffectSafe(MOVE_EFFECT_FROSTBITE, battler, target);
+    },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_CHLOROPHYLLO> = {
+    .onEntry = +[](ON_ENTRY) -> int { return AddBattlerType(battler, TYPE_GRASS); },
+    .addsType = TYPE_GRASS,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_BLUESCREEN> = {
+    .onEntry = Impl<ABILITY_SCREEN_CLEANER>.onEntry,
+    .onAttacker = Impl<ABILITY_BRAIN_FREEZE>.onAttacker,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_CHARGE_SPORES> = {
+    .onEntry = Impl<ABILITY_LIGHTNING_BORN>.onEntry,
+    .onDefender = Impl<ABILITY_EFFECT_SPORE>.onDefender,
+    .breakable = TRUE,
+    .powderImmune = TRUE,
+    .addsType = TYPE_ELECTRIC,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_STATIC_BLOOM> = {
+    .onOffensiveMultiplier =
+        +[](ON_OFFENSIVE_MULTIPLIER) {
+            if (moveType == TYPE_ELECTRIC && IsBattlerTerrainAffected(battler, STATUS_FIELD_ELECTRIC_TERRAIN)) MUL(1.5);
+        },
+    .allowTerrainIfAirborne = TERRAIN_ELECTRIC,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_DAZZLING_WINGS> = {
+    .onImmune = Impl<ABILITY_DAZZLING>.onImmune,
+    .onOffensiveMultiplier = Impl<ABILITY_GIANT_WINGS>.onOffensiveMultiplier,
+    .onImmuneFor = APPLY_ON_ALLY,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_FEARLESS> = {
+    .onDefensiveMultiplier =
+        +[](ON_DEFENSIVE_MULTIPLIER) {
+            if (moveType == TYPE_GHOST) RESISTANCE(.5);
+        },
+    .onStatusImmune = +[](ON_STATUS_IMMUNE) -> int {
+        CHECK(status & CHECK_FEAR)
+        return TRUE;
+    },
+    .onBlockStatDrops = +[](ON_BLOCK_STAT_DROPS) -> StatDropBlockType {
+        CHECK_NOT(selfStatDrop)
+        *script = BattleScript_AbilityNoStatLoss;
+        return STAT_DROP_BLOCK_ALL;
+    },
+    .breakable = TRUE,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_CLEANSE> = {
+    .onEntry = +[](ON_ENTRY) -> int {
+        int counter = GetSingleUseAbilityCounter(battler, ability);
+        CHECK(counter < 2)
+        CHECK(UseEntryMove(battler, ability, MOVE_HEAL_BELL, 0))
+
+        SetSingleUseAbilityCounter(battler, ability, counter + 1);
+        return TRUE;
+    },
+    .persistent = TRUE,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_GNAWING_AWAY> = {
+    .onAttacker = Impl<ABILITY_CRUSHING_JAW>.onAttacker,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_VERSATILE> = {
+    .onBeforeAttack = Impl<ABILITY_RKS_SYSTEM>.onBeforeAttack,
+    .randomizerBanned = TRUE,
+    .omniStab = TRUE,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_POWER_SHOES> = {
+    .onOffensiveMultiplier = Impl<ABILITY_STRIKER>.onOffensiveMultiplier,
+    .onChooseDefensiveStat =
+        +[](ON_CHOOSE_DEFENSIVE_STAT) {
+            if (IsStrikerBoosted(battler, move)) *defStatToUse = STAT_SPDEF;
+        },
+};
+
+template <>
+constexpr Ability Impl <ABILITY_SHARPSHOOTER> = {
+    .onOffensiveMultiplier =
+        +[](ON_OFFENSIVE_MULTIPLIER) {
+            Impl<ABILITY_SNIPER>.onOffensiveMultiplier(DELEGATE_OFFENSIVE_MULTIPLIER);
+            Impl<ABILITY_MEGA_LAUNCHER>.onOffensiveMultiplier(DELEGATE_OFFENSIVE_MULTIPLIER);
+        },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_HIGH_RISE> = {
+    ATE_ABILITY(TYPE_STEEL),
+    .onAfterTypeEffectiveness = Impl<ABILITY_STEELWORKER>.onAfterTypeEffectiveness,
+    .onAfterTypeEffectivenessFor = APPLY_ON_TARGET,
+    .breakable = TRUE,
+    .mirrorArmor = TRUE,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_POWER_HORNS> = {
+    .onOffensiveMultiplier = Impl<ABILITY_MIGHTY_HORN>.onOffensiveMultiplier,
+    .onChooseDefensiveStat =
+        +[](ON_CHOOSE_DEFENSIVE_STAT) {
+            if (gBattleMoves[move].hornBased) *defStatToUse = STAT_SPDEF;
+        },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_MAGIC_BLANKET> = {
+    .onEndTurn = +[](ON_END_TURN) -> int {
+        CHECK(UseEntryMove(battler, ability, MOVE_INVERSE_ROOM, 0))
+        return TRUE;
+    },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_RABBIT_HAT> = {
+    .onDefender = +[](ON_DEFENDER) -> int {
+        CHECK(gBattleMons[battler].hp <= gBattleMons[battler].maxHP / 3)
+        CHECK(CanBattlerBeForceSwitched(battler))
+
+        gQueuedExtraAttackData[++gQueuedAttackCount] = (struct ExtraAttackActionStruct){
+            .ability = ability,
+            .move = MOVE_TELEPORT,
+            .attacker = (u8)battler,
+            .target = (u8)battler,
+        };
+
+        return FALSE;
+    },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_HOCUS> = {
+    .onDefensiveMultiplier =
+        +[](ON_DEFENSIVE_MULTIPLIER) {
+            int partner = BATTLE_PARTNER(battler);
+            if (!IsBattlerAlive(partner)) return;
+            if (BattlerHasAbility(partner, ABILITY_HOCUS, FALSE) || BattlerHasAbility(partner, ABILITY_POCUS, FALSE)) MUL(.5);
+        },
+};
+
+
+template <>
+constexpr Ability Impl<ABILITY_ELECTRIC_CURRENT> = {
+    .onAttacker = Impl<ABILITY_GRIP_PINCER>.onAttacker,
+    .onOffensiveMultiplier = Impl<ABILITY_STATIC>.onOffensiveMultiplier,
+    .onDefensiveMultiplier = Impl<ABILITY_STATIC>.onDefensiveMultiplier,
+    .onAccuracy = Impl<ABILITY_GRIP_PINCER>.onAccuracy,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_POCUS> = {
+    .onDefensiveMultiplier = Impl<ABILITY_HOCUS>.onDefensiveMultiplier,
+};
+
+template <>
+constexpr Ability Impl<ABILITY_CRASHOUT> = {
+    .onEndTurn = +[](ON_END_TURN) -> int {
+        // Persists through the end-turn phase in case damage later in the end-turn phase would trigger another second attack
+        SetOncePerTurnAbilityCounter(battler, ability, GetAbilityState(battler, ability));
+        SetAbilityState(battler, ability, FALSE);
+        return FALSE;
+    },
+    .onReactive = +[](ON_REACTIVE) -> int {
+        CHECK(Random() % 100 < 5)
+        CHECK(gRoundStructs[battler].damaged)
+        CHECK_NOT(GetAbilityState(battler, ability))
+        CHECK_NOT(GetOncePerTurnAbilityCounter(battler, ability))
+
+        SetAbilityState(battler, ability, TRUE);
+
+        gQueuedExtraAttackData[++gQueuedAttackCount] = (struct ExtraAttackActionStruct){
+            .ability = ability,
+            .move = MOVE_EXPLOSION,
+            .attacker = (u8)battler,
+            .target = (u8)BATTLE_OPPOSITE(battler),
+        };
+
+        return TRUE;
+    },
+};
+
+template <>
+constexpr Ability Impl<ABILITY_BEACHBALL> ={
+    .onDefender = +[](ON_DEFENDER) -> int {
+        CHECK(ShouldApplyOnHitEffect(battler))
+        CHECK(moveType == TYPE_FIGHTING)
+        CHECK(CanRaiseStat(battler, STAT_SPEED))
+
+        SetStatChanger(STAT_SPEED, 1);
+        BattleScriptCall(BattleScript_TargetAbilityStatRaiseOnMoveEnd);
+        return TRUE;
+    },
+    .onDefensiveMultiplier =
+        +[](ON_DEFENSIVE_MULTIPLIER) {
+            if (moveType == TYPE_FIGHTING) RESISTANCE(.5);
+        },
+};
+template <>
+constexpr Ability Impl<ABILITY_FAE_DOMAIN> = {
+    .onEntry = Impl<ABILITY_MISTY_SURGE>.onEntry,
+    .onStatusImmune = Impl<ABILITY_AROMA_VEIL>.onStatusImmune,
+    .onStatusImmuneFor = APPLY_ON_ALLY,
+    .allowTerrainIfAirborne = TERRAIN_MISTY,
+    .breakable = TRUE,
+};
 #define FOR_EACH_ABILITY_FUNCTION(abilityId) \
     if (Intimidate<abilityId>.statsLowered[0]) count++;
 constexpr u32 IntimidateCount() {

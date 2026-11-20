@@ -464,6 +464,7 @@ extern const u8 BattleScript_EjectButton[];
 extern const u8 BattleScript_NotAffectedAbilityPopUp[];
 extern const u8 BattleScript_BattlerShookOffTaunt[];
 extern const u8 BattleScript_BattlerGotOverItsInfatuation[];
+extern const u8 BattleScript_BattlerGotOverItsFear[];
 extern const u8 BattleScript_Pickpocket[];
 extern const u8 BattleScript_StickyBarbTransfer[];
 extern const u8 BattleScript_AttackerItemStatRaise[];
@@ -590,6 +591,7 @@ extern const u8 BattleScript_PrintDamageDoneString[];
 extern const u8 BattleScript_BeakBlastSetUp[];
 extern const u8 BattleScript_AttackerUsedAnExtraMove[];
 extern const u8 BattleScript_AttackerUsedAnExtraMoveOnSwitchIn[];
+extern const u8 BattleScript_SkillUsedAnExtraMove[];
 extern const u8 BattleScript_DefenderEffectSpeedDownHit[];
 extern const u8 BattleScript_DefenderSetsSpikeLayer_Scrapyard[];
 extern const u8 BattleScript_DoubleSpikesOnEntry[];
@@ -677,6 +679,7 @@ extern const u8 BattleScript_MoveEffectCreepingThorns[];
 extern const u8 BattleScript_MoveEffectSpike[];
 extern const u8 BattleScript_MoveEffectStickyWeb[];
 extern const u8 BattleScript_MoveEffectLeechSeed[];
+extern const u8 BattleScript_LightWieldActivated[];
 
 extern const u8 BattleScript_Archmage_Effect_Type_Electric[];
 extern const u8 BattleScript_Archmage_Effect_Type_Fairy[];
@@ -684,6 +687,7 @@ extern const u8 BattleScript_Archmage_Effect_Type_Grass[];
 extern const u8 BattleScript_Archmage_Effect_Type_Psychic[];
 extern const u8 BattleScript_Archmage_Effect_Type_Normal[];
 extern const u8 BattleScript_Archmage_Effect_Type_Rock[];
+extern const u8 BattleScript_Archmage_Effect_Type_Bug[];
 
 extern const u8 BattleScript_FrostbiteTurnDmg[];
 extern const u8 BattleScript_MoveUsedUnfrostbite[];
@@ -779,21 +783,18 @@ extern const u8 BattleScript_ExtraAbilities1[];
 extern const u8 BattleScript_ExtraAbilities2[];
 extern const u8 BattleScript_ExtraAbilities3[];
 extern const u8 BattleScript_AnnounceBattleSkillEnd3[];
+extern const u8 BattleScript_AnnounceBattleSkill[];
+extern const u8 BattleScript_WaitMessageEnd3[];
+extern const u8 BattleScript_SkillSideCondition[];
+extern const u8 BattleScript_SkillField[];
+extern const u8 BattleScript_SkillStatus[];
+extern const u8 BattleScript_SkillPowerTrick[];
+extern const u8 BattleScript_DrainHeal[];
+extern const u8 BattleScript_WaitMessageReturn[];
+extern const u8 BattleScript_SkillWeather[];
 
-extern const u8 BattleScript_ExtraSkillEviolite[];
 
-extern const u8 BattleScript_ExtraSkillPermaStickyWeb[];
-extern const u8 BattleScript_ExtraSkillPermaStickyWebBothSides[];
-extern const u8 BattleScript_ExtraSkillPermaSpikes[];
-extern const u8 BattleScript_ExtraSkillPermaToxicSpikes[];
-extern const u8 BattleScript_ExtraSkillPermaStealthRock[];
-extern const u8 BattleScript_ExtraSkillPermaCaltrops[];
-extern const u8 BattleScript_ExtraSkillHazardsAll[];
 
-extern const u8 BattleScript_ExtraSkillPermaTrickRoom[];
-extern const u8 BattleScript_ExtraSkillPermaInverseRoom[];
-extern const u8 BattleScript_ExtraSkillPermaRainbow[];
-extern const u8 BattleScript_ExtraSkillPermaSwamp[];
-extern const u8 BattleScript_ExtraSkillPermaFireSea[];
+
 
 #endif  // GUARD_BATTLE_SCRIPTS_H

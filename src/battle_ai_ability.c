@@ -69,6 +69,15 @@ int ScoreAttackAbility(AbilityEnum ability, int battlerAtk, int battlerDef, int 
             }
             break;
 
+        case ABILITY_PUFFED_OUT:
+            REQUIRE(gBattleMoves[move].effect == EFFECT_SHELL_SMASH)
+            REQUIRE_NOT(gBattleMons[battlerAtk].status2 && STATUS2_TRANSFORMED)
+            switch (gBattleMons[battlerAtk].species) {
+                case SPECIES_MINIOR_REDUX_INFLATE:
+                    return AI_SCORE_FORM_CHANGE(battlerAtk, SPECIES_MINIOR_REDUX);
+            }
+            break;
+
         case ABILITY_GULP_MISSILE:
             REQUIRE_NOT(gBattleMons[battlerAtk].status2 && STATUS2_TRANSFORMED)
             REQUIRE(gBattleMons[battlerAtk].species == SPECIES_CRAMORANT)
@@ -1071,13 +1080,13 @@ int ScoreSwitchInAbility(AbilityEnum ability, int battlerAtk, int battlerDef, in
         case ABILITY_PROTOSYNTHESIS:
             if (IsWeatherActive(WEATHER_SUN_ANY)) return AI_SCORE_PARADOX_BOOST;
 
-            if (GetBattlerHoldEffect(battlerAtk, TRUE) == HOLD_EFFECT_BOOSTER_ENERGY) return AI_SCORE_PARADOX_BOOST + AI_SCORE_LOSE_ITEM(battlerAtk);
+            if (BattlerHasHoldEffect(battlerAtk, HOLD_EFFECT_BOOSTER_ENERGY, TRUE)) return AI_SCORE_PARADOX_BOOST + AI_SCORE_LOSE_ITEM(battlerAtk);
             break;
 
         case ABILITY_QUARK_DRIVE:
             if (IsTerrainActive(STATUS_FIELD_ELECTRIC_TERRAIN)) return AI_SCORE_PARADOX_BOOST;
 
-            if (GetBattlerHoldEffect(battlerAtk, TRUE) == HOLD_EFFECT_BOOSTER_ENERGY) return AI_SCORE_PARADOX_BOOST + AI_SCORE_LOSE_ITEM(battlerAtk);
+            if (BattlerHasHoldEffect(battlerAtk, HOLD_EFFECT_BOOSTER_ENERGY, TRUE)) return AI_SCORE_PARADOX_BOOST + AI_SCORE_LOSE_ITEM(battlerAtk);
             break;
 
         case ABILITY_FURNACE:
@@ -1141,6 +1150,8 @@ int ScoreSwitchInAbility(AbilityEnum ability, int battlerAtk, int battlerDef, in
             return AI_SCORE_ADD_TYPE(battlerAtk, TYPE_PSYCHIC);
 
         case ABILITY_TERAVOLT:
+        case ABILITY_LIGHTNING_BORN:
+        case ABILITY_BIOLUMINESCENT:
             return AI_SCORE_ADD_TYPE(battlerAtk, TYPE_ELECTRIC);
 
         case ABILITY_TURBOBLAZE:
@@ -1155,6 +1166,9 @@ int ScoreSwitchInAbility(AbilityEnum ability, int battlerAtk, int battlerDef, in
 
         case ABILITY_BAD_GUY:
             return AI_SCORE_ADD_TYPE(battlerAtk, TYPE_DARK);
+        
+        case ABILITY_CHLOROPHYLLO:
+            return AI_SCORE_ADD_TYPE(battlerAtk, TYPE_GRASS);
 
         case ABILITY_POWER_OF_ALCHEMY:
             if (!gBattleMons[battlerDef].item || gBattleMons[battlerDef].item == ITEM_BIG_NUGGET ||

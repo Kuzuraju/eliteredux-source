@@ -2,13 +2,17 @@ package er.trainer
 
 import er.FileGenerator.IND
 import er.Generator
+import er.GeneratorUtils.ITEMS_LIST
 import er.GeneratorUtils.SPECIES_MAP
 import er.GeneratorUtils.TRAINERS_LIST
 import er.GeneratorUtils.expandLearnset
 import er.GeneratorUtils.findLearnsetForSpecies
+import er.GeneratorUtils.inlineSkillId
+import er.proto.AbilityEnum
 import er.proto.BattleSkillEnum
 import er.proto.ItemEnum
 import er.proto.Nature
+import er.proto.Pocket
 import er.proto.Species.Gender.FEMALE
 import er.proto.TrainerParty.TrainerMon
 import er.proto.Type
@@ -100,6 +104,19 @@ object TrainerPartyGenerator : Generator {
   }
 
   const val HELL_MODE_MAX_SKILLS = 3;
+  // Same as in include/constants/pokemon.h
+  const val HELL_MODE_EXTRA_ABILITIES = 3
+  const val HELL_MODE_EXTRA_ITEMS = 2
+  // extra_item has to be passive: the code that uses these up would take the Pokemon's own item instead
+  // And tbh I don't think it's useful for now
+  // Check where this is used to find the full filter
+  private val CONSUMED_ITEMS =
+    setOf(
+      "ITEM_AIR_BALLOON", "ITEM_FOCUS_SASH", "ITEM_RED_CARD", "ITEM_EJECT_BUTTON", "ITEM_EJECT_PACK", "ITEM_WHITE_HERB",
+      "ITEM_MENTAL_HERB", "ITEM_POWER_HERB", "ITEM_MIRROR_HERB", "ITEM_WEAKNESS_POLICY", "ITEM_BLUNDER_POLICY",
+      "ITEM_ROOM_SERVICE", "ITEM_THROAT_SPRAY", "ITEM_ADRENALINE_ORB", "ITEM_CELL_BATTERY", "ITEM_ABSORB_BULB",
+      "ITEM_LUMINOUS_MOSS", "ITEM_SNOWBALL", "ITEM_BOOSTER_ENERGY", "ITEM_STICKY_BARB", "ITEM_RED_ORB", "ITEM_BLUE_ORB",
+    )
 
   override fun generate(writer: OutputStreamWriter) {
     val allParties =
@@ -180,11 +197,41 @@ object TrainerPartyGenerator : Generator {
           val actualElite = elite.monList.ifEmpty { ace.monList }
           val actualHell = hell.monList.ifEmpty { actualElite }
 
-          addIfNot(hell.skillList.size <= HELL_MODE_MAX_SKILLS) {
-              "Trainer ${trainer.id} has ${hell.skillList.size} Hell skills; max is ${HELL_MODE_MAX_SKILLS}."
+          val hellSkills =
+            hell.skillList.map { it.name } + hell.inlineSkillList.indices.map { inlineSkillId(trainer, it) }
+          addIfNot(hellSkills.size <= HELL_MODE_MAX_SKILLS) {
+              "Trainer ${trainer.id} has ${hellSkills.size} Hell skills; max is ${HELL_MODE_MAX_SKILLS}."
           }
-          
-          val skills = List(HELL_MODE_MAX_SKILLS) { index -> hell.skillList.getOrElse(index) { BattleSkillEnum.SKILL_NONE } } 
+
+          val skills = List(HELL_MODE_MAX_SKILLS) { index -> hellSkills.getOrElse(index) { BattleSkillEnum.SKILL_NONE.name } }
+
+          // From every inline skill of the trainer
+          val hellAbilities = hell.inlineSkillList.flatMap { skill -> skill.extraAbilityList.map { it.name } }
+          // Not in errors, those only show with VALIDATE_TRAINERS and the extra ones would be dropped
+          check(hellAbilities.size <= HELL_MODE_EXTRA_ABILITIES) {
+              "Trainer ${trainer.id} has ${hellAbilities.size} Hell extra abilities; max is ${HELL_MODE_EXTRA_ABILITIES}."
+          }
+          val abilities = List(HELL_MODE_EXTRA_ABILITIES) { index -> hellAbilities.getOrElse(index) { AbilityEnum.ABILITY_NONE.name } }
+
+          val hellItems = hell.inlineSkillList.flatMap { it.extraItemList }
+          check(hellItems.size <= HELL_MODE_EXTRA_ITEMS) {
+              "Trainer ${trainer.id} has ${hellItems.size} items while max is ${HELL_MODE_EXTRA_ITEMS}."
+          }
+          for (extra in hellItems) {
+              check(extra.item != ItemEnum.ITEM_NONE && extra.item != ItemEnum.UNRECOGNIZED) { "Trainer ${trainer.id}: extra_item without an item" }
+              check(extra.strength in 0..255) { "Trainer ${trainer.id}: extra_item strength ${extra.strength} isn't between 1 and 255" }
+              val name = extra.item.name
+              val pocket = ITEMS_LIST.firstOrNull { it.id == extra.item }?.grouping
+              // Forbid a whole class of items that cause problems
+              check(
+                name !in CONSUMED_ITEMS && !name.endsWith("_GEM") && !name.endsWith("_SEED") &&
+                  pocket != Pocket.POCKET_BERRIES && pocket != Pocket.POCKET_MEGA_STONES
+              ) {
+                "Trainer ${trainer.id}: extra_item $name is forbidden, only passive items work"
+              }
+          }
+          check(hellItems.map { it.item }.distinct().size == hellItems.size) { "Trainer ${trainer.id} lists an extra_item twice" }
+          val items = List(HELL_MODE_EXTRA_ITEMS) { index -> hellItems.getOrNull(index)?.let { "{${it.item.name}, ${it.strength}}" } ?: "{ITEM_NONE, 0}" }
 
           val flags =
             buildList {
@@ -222,6 +269,8 @@ object TrainerPartyGenerator : Generator {
             |$IND$IND.partySizeHell = ${actualHell.size},
             |$IND$IND.partyHell = __sParty_${actualHell.hashCode().toUInt()},
             |$IND$IND.hellSkills = { ${skills.joinToString(", ")} },
+            |$IND$IND.hellAbilities = { ${abilities.joinToString(", ")} },
+            |$IND$IND.hellItems = { ${items.joinToString(", ")} },
             |$IND$IND.aiFlags = $flags,
             |$IND},
             """

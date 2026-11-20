@@ -1,8 +1,11 @@
 #ifndef GUARD_DATA_H
 #define GUARD_DATA_H
 
+#include "constants/pokemon.h"
+#include "generated/constants/abilities.h"
 #include "generated/constants/moves.h"
 #include "generated/constants/battle_skills.h"
+#include "generated/constants/items.h"
 
 #define SPECIES_SHINY_TAG 5000
 
@@ -61,6 +64,11 @@ typedef struct TrainerMonItemCustomMoves {
 
 #define HELL_MODE_MAX_SKILLS 3
 
+struct HellItem {
+    ItemEnum item;
+    u8 strength;
+};
+
 struct Trainer {
     /*0x00*/ u8 partyFlags;
     /*0x01*/ u8 trainerClass;
@@ -78,6 +86,8 @@ struct Trainer {
     /*0x28*/ const TrainerMonItemCustomMoves * partyHell;
     /*0x2F*/ u16 trainerFlag;
     /*0x??*/ BattleSkillEnum hellSkills[HELL_MODE_MAX_SKILLS];
+    /*0x??*/ AbilityEnum hellAbilities[HELL_MODE_EXTRA_ABILITIES];
+    /*0x??*/ struct HellItem hellItems[HELL_MODE_EXTRA_ITEMS];
 };
 
 #define TRAINER_ENCOUNTER_MUSIC(trainer) ((gTrainers[trainer].encounterMusic_gender & 0x7F))

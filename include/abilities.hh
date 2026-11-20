@@ -114,6 +114,7 @@ typedef enum {
     CHECK_DRENCH = 1 << 10,
     CHECK_FLINCH = 1 << 11,
     CHECK_REDIRECTION = 1 << 12,
+    CHECK_FEAR = 1 << 13,
 } StatusCheckEnum;
 typedef int (*AbilityOnCanStatusType)(u8 battler, MoveEnum move, StatusCheckEnum status);
 typedef int (*AbilityOnStatusImmune)(u8 battler, u8 target, AbilityEnum ability, StatusCheckEnum status);
@@ -127,6 +128,7 @@ typedef enum MoveFlag {
     MOVE_FLAG_MEGA_LAUNCHER,
     MOVE_FLAG_DANCE,
     MOVE_FLAG_KEEN_EDGE,
+    MOVE_FLAG_BONE,
 } MoveFlag;
 typedef int (*AbilityOnModifyMoveFlags)(u8 battler, MoveEnum move, Type type, MoveFlag flag);
 typedef int (*AbilityOnMoldBreaker)(u8 battler, MoveEnum move);

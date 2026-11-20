@@ -3,6 +3,7 @@
 
 #include "abilities.hh"
 #include "battle_ai_new.h"
+#include "generated/constants/battle_skills.h"
 
 #define MOVE_LIMITATION_ZEROMOVE (1 << 0)
 #define MOVE_LIMITATION_PP (1 << 1)
@@ -63,8 +64,10 @@
 #define SCREEN_DURATION 5
 #define SCREEN_DURATION_EXTENDED 8
 #define SCREEN_DURATION_SHORT 3
+#define SCREEN_DURATION_MAX 255
 #define TAILWIND_DURATION 3
 #define TAILWIND_DURATION_SHORT 3
+#define TAILWIND_DURATION_MAX 255
 #define PLEDGE_DURATION 3
 #define SPORT_DURATION 5
 #define QUASH_DURATION 5
@@ -170,7 +173,7 @@ typedef struct {
     SpeciesEnum lowHpSpecies;
     u8 hpFraction;
 } HpTransformation;
-extern const HpTransformation gHpTransformations[11];
+extern const HpTransformation gHpTransformations[12];
 
 int GetAbilityIndex(int battler, AbilityEnum ability, int checkMoldBreaker);
 s32 CountUsablePartyMons(u8 battlerId);
@@ -323,8 +326,10 @@ bool32 IsMoveMakingContact(MoveEnum move, u8 battlerAtk);
 bool32 IsBattlerGrounded(u8 battlerId);
 bool32 IsBattlerGroundedIgnoreType(u8 battlerId);
 int IsSoundMove(int battler, MoveEnum move);
+bool32 HasTrainerSkill(u8 battler, BattleSkillEnum skill);
 int IsKeenEdge(int battler, MoveEnum move, Type moveType);
 bool32 IsBattlerAlive(u8 battlerId);
+bool32 IsHellTrainerBattle(void);
 u8 GetBattleMonMoveSlot(struct BattlePokemon* battleMon, MoveEnum move);
 u32 GetBattlerWeight(u8 battlerId);
 s32 CalculateMoveDamage(MoveEnum move, u8 battlerAtk, u8 battlerDef, u8* moveType, s32 fixedBasePower, u8 critRoll, bool32 randomFactor, bool32 updateFlags);
@@ -409,6 +414,8 @@ void UpdateAbilityStateIndicesForNewSpecies(u8 battler, u16 newSpecies);
 bool32 IsUnsuppressableAbility(AbilityEnum ability);
 int IsPersistentOrUnsuppressableAbility(AbilityEnum ability);
 bool8 CanBeDisabled(u8 battlerId);
+bool32 BattlerHasHoldEffect(u8 battlerId, u32 holdEffect, bool32 checkNegating);
+u32 GetBattlerHoldEffectParamFor(u8 battlerId, u32 holdEffect);
 bool8 DoesBattlerHaveAbilityShield(u8 battlerId);
 u16 IsSoundproof(u8 battlerId);
 AbilityEnum BattlerHasAbility(u8 battler, AbilityEnum ability, int checkMoldBreaker);
@@ -491,7 +498,7 @@ bool32 IsEntrainmentTargetOrSimpleBeamBannedAbility(AbilityEnum ability);
 
 bool32 CanSleep(u8 battlerId);
 bool32 CanBePoisoned(u8 battlerAttacker, u8 battlerTarget, MoveEnum move);
-bool32 CanBeBurned(u8 battlerId);
+bool32 CanBeBurned(u8 battlerAttacker, u8 battlerTarget);
 bool32 CanBeBurnedIgnoreTypeImmunity(u8 battlerId);
 bool32 CanBeParalyzed(u8 battlerAttacker, u8 battlerTarget);
 bool32 CanBeParalyzedIgnoreType(u8 battlerAttacker, u8 battlerTarget);

@@ -1439,7 +1439,7 @@ BattleScript_MoveEffectFlameBurst::
 	healthbarupdate BS_TARGET_PARTNER
 	datahpupdate BS_TARGET_PARTNER
 	tryfaintmon BS_TARGET_PARTNER, FALSE, NULL
-	return
+	goto BattleScript_MoveEnd
 
 BattleScript_EffectPowerTrick:
 	attackcanceler
@@ -8627,7 +8627,7 @@ BattleScript_DoTurnDmgEnd:
 	end2
 
 BattleScript_FuneralPyreDamage::
-	hpfractiontodamage BS_STACK_1, 4
+	hpfractiontodamage BS_STACK_1, 8
 	copybyte gBattlerAttacker, gStackBattler1
 	printstring STRINGID_PKMNHURTBYFUNERALPYRE
 	waitmessage B_WAIT_TIME_LONG
@@ -9031,7 +9031,7 @@ BattleScript_StackBattlerStatUp::
 	statbuffchange MOVE_EFFECT_AFFECTS_USER, BattleScript_RestoreAttackerReturn
 	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, B_MSG_STAT_WONT_INCREASE, BattleScript_RestoreAttackerReturn
 	setgraphicalstatchangevalues
-	playanimation BS_ABILITY_BATTLER, B_ANIM_STATS_CHANGE, sB_ANIM_ARG1
+	playanimation BS_ATTACKER, B_ANIM_STATS_CHANGE, sB_ANIM_ARG1
 	printfromtable gStatUpStringIds
 	readattackerfromstack3
 	return
@@ -9323,6 +9323,10 @@ BattleScript_AttackerUsedAnExtraMove::
 	call BattleScript_AbilityPopUp
 	printstring STRINGID_ABILITYLETITUSEMOVE
 	waitmessage B_WAIT_TIME_SHORT
+	gotoactualmove BS_ATTACKER
+
+BattleScript_SkillUsedAnExtraMove::
+	extraskillpopup 1
 	gotoactualmove BS_ATTACKER
 
 BattleScript_AttackerUsedAnExtraMoveOnSwitchIn::
@@ -10666,6 +10670,12 @@ BattleScript_BattlerGotOverItsInfatuation::
 	waitmessage B_WAIT_TIME_LONG
 	return
 
+BattleScript_BattlerGotOverItsFear::
+	call BattleScript_AbilityPopUp
+	printstring STRINGID_PKMNGOTOVERITSFEAR
+	waitmessage B_WAIT_TIME_LONG
+	return
+
 BattleScript_IgnoresWhileAsleep::
 	printstring STRINGID_PKMNIGNORESASLEEP
 	waitmessage B_WAIT_TIME_LONG
@@ -11519,6 +11529,7 @@ BattleScript_AngelsWrath_Effect_Bug_Bite_2::
 
 BattleScript_NosferatuActivated::
 	call BattleScript_AbilityPopUp
+BattleScript_DrainHeal::
 	manipulatedamage DMG_TO_HP_FROM_ABILITY
 	orword gHitMarker, HITMARKER_IGNORE_SUBSTITUTE
 	healthbarupdate BS_ATTACKER
@@ -11627,6 +11638,11 @@ BattleScript_Archmage_Effect_Type_Normal::
 
 BattleScript_Archmage_Effect_Type_Rock::
 	printstring STRINGID_POINTEDSTONESFLOAT
+	waitmessage B_WAIT_TIME_LONG
+	return
+
+BattleScript_Archmage_Effect_Type_Bug::
+	printstring STRINGID_STICKYWEBUSED
 	waitmessage B_WAIT_TIME_LONG
 	return
 	
@@ -12298,99 +12314,6 @@ BattleScript_ExtraSkillPermaStickyWebOld::
 	waitanimation
 	end2
 
-BattleScript_ExtraSkillPermaStickyWeb::
-	call BattleScript_AnnounceBattleSkill
-	setbyte gBattlerAttacker B_POSITION_OPPONENT_LEFT
-	setbyte gBattlerTarget B_POSITION_PLAYER_LEFT
-	playmoveanimation BS_ATTACKER, MOVE_STICKY_WEB
-	waitanimation
-	end3
-
-BattleScript_ExtraSkillPermaStickyWebBothSides::
-	call BattleScript_AnnounceBattleSkill
-	setbyte gBattlerAttacker B_POSITION_OPPONENT_LEFT
-	setbyte gBattlerTarget B_POSITION_PLAYER_LEFT
-	playmoveanimation BS_ATTACKER, MOVE_STICKY_WEB
-	swapbattlerandtargetvia34
-	playmoveanimation BS_ATTACKER, MOVE_STICKY_WEB
-	waitanimation
-	end3
-
-BattleScript_ExtraSkillPermaSpikes::
-	call BattleScript_AnnounceBattleSkill
-	setbyte gBattlerAttacker B_POSITION_OPPONENT_LEFT
-	setbyte gBattlerTarget B_POSITION_PLAYER_LEFT
-	playmoveanimation BS_ATTACKER, MOVE_SPIKES
-	waitanimation
-	end3
-
-BattleScript_ExtraSkillPermaToxicSpikes::
-	call BattleScript_AnnounceBattleSkill
-	setbyte gBattlerAttacker B_POSITION_OPPONENT_LEFT
-	setbyte gBattlerTarget B_POSITION_PLAYER_LEFT
-	playmoveanimation BS_ATTACKER, MOVE_TOXIC_SPIKES
-	waitanimation
-	end3
-
-BattleScript_ExtraSkillPermaStealthRock::
-	call BattleScript_AnnounceBattleSkill
-	setbyte gBattlerAttacker B_POSITION_OPPONENT_LEFT
-	setbyte gBattlerTarget B_POSITION_PLAYER_LEFT
-	playmoveanimation BS_ATTACKER, MOVE_STEALTH_ROCK
-	waitanimation
-	end3
-
-BattleScript_ExtraSkillPermaCaltrops::
-	call BattleScript_AnnounceBattleSkill
-	setbyte gBattlerAttacker B_POSITION_OPPONENT_LEFT
-	setbyte gBattlerTarget B_POSITION_PLAYER_LEFT
-	playmoveanimation BS_ATTACKER, MOVE_SPIKES
-	waitanimation
-	end3
-
-BattleScript_ExtraSkillHazardsAll::
-	call BattleScript_AnnounceBattleSkill
-	setbyte gBattlerAttacker B_POSITION_OPPONENT_LEFT
-	setbyte gBattlerTarget B_POSITION_PLAYER_LEFT
-	playmoveanimation BS_ATTACKER, MOVE_STEALTH_ROCK @ idk what animation to use for this
-	waitanimation
-	end3
-
-BattleScript_ExtraSkillPermaTrickRoom::
-	call BattleScript_AnnounceBattleSkill
-	setbyte gBattlerAttacker B_POSITION_OPPONENT_LEFT
-	playmoveanimation BS_ATTACKER, MOVE_TRICK_ROOM
-	waitanimation
-	end3
-
-BattleScript_ExtraSkillPermaInverseRoom::
-	call BattleScript_AnnounceBattleSkill
-	setbyte gBattlerAttacker B_POSITION_OPPONENT_LEFT
-	playmoveanimation BS_ATTACKER, MOVE_INVERSE_ROOM
-	waitanimation
-	end3
-
-BattleScript_ExtraSkillPermaRainbow::
-	call BattleScript_AnnounceBattleSkill
-	setbyte gEffectBattler B_POSITION_OPPONENT_LEFT
-	playanimation BS_EFFECT_BATTLER, B_ANIM_RAINBOW
-	waitanimation
-	end3
-
-BattleScript_ExtraSkillPermaSwamp::
-	call BattleScript_AnnounceBattleSkill
-	setbyte gEffectBattler B_POSITION_PLAYER_LEFT
-	playanimation BS_EFFECT_BATTLER, B_ANIM_SWAMP
-	waitanimation
-	end3
-
-BattleScript_ExtraSkillPermaFireSea::
-	call BattleScript_AnnounceBattleSkill
-	setbyte gEffectBattler B_POSITION_PLAYER_LEFT
-	playanimation BS_EFFECT_BATTLER, B_ANIM_SEA_OF_FIRE
-	waitanimation
-	end3
-
 BattleScript_ExtraSkillCopyStats::
 	setbyte gBattlerTarget, B_POSITION_PLAYER_LEFT
 	setbyte gBattlerAttacker B_POSITION_OPPONENT_LEFT
@@ -12448,6 +12371,131 @@ BattleScript_ExtraSkillLuckyChant::
 	waitanimation
 	end2
 
+BattleScript_SkillWeather::
+	playanimation2 BS_BATTLER_0, cMULTISTRING_CHOOSER, NULL
+	call BattleScript_OnWeatherChange
+	return
+
+@ chooser: SKILL_SIDE_*, gStackBattler1 uses it (the side the move would come from), gStackBattler2 is on the other side
+BattleScript_SkillSideCondition::
+	saveattackerandtargetto34
+	copybyte gBattlerAttacker, gStackBattler1
+	copybyte gBattlerTarget, gStackBattler2
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_SIDE_TOXIC_SPIKES, BattleScript_SkillSideToxicSpikes
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_SIDE_STEALTH_ROCK, BattleScript_SkillSideStealthRock
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_SIDE_STICKY_WEB, BattleScript_SkillSideStickyWeb
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_SIDE_REFLECT, BattleScript_SkillSideReflect
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_SIDE_LIGHT_SCREEN, BattleScript_SkillSideLightScreen
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_SIDE_AURORA_VEIL, BattleScript_SkillSideAuroraVeil
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_SIDE_SAFEGUARD, BattleScript_SkillSideSafeguard
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_SIDE_MIST, BattleScript_SkillSideMist
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_SIDE_TAILWIND, BattleScript_SkillSideTailwind
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_SIDE_LUCKY_CHANT, BattleScript_SkillSideLuckyChant
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_SIDE_SWAMP, BattleScript_SkillSideSwamp
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_SIDE_SEA_OF_FIRE, BattleScript_SkillSideSeaOfFire
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_SIDE_RAINBOW, BattleScript_SkillSideRainbow
+	playmoveanimation BS_ATTACKER, MOVE_SPIKES @ and caltrops
+	goto BattleScript_SkillSideConditionEnd
+BattleScript_SkillSideToxicSpikes:
+	playmoveanimation BS_ATTACKER, MOVE_TOXIC_SPIKES
+	goto BattleScript_SkillSideConditionEnd
+BattleScript_SkillSideStealthRock:
+	playmoveanimation BS_ATTACKER, MOVE_STEALTH_ROCK
+	goto BattleScript_SkillSideConditionEnd
+BattleScript_SkillSideStickyWeb:
+	playmoveanimation BS_ATTACKER, MOVE_STICKY_WEB
+	goto BattleScript_SkillSideConditionEnd
+BattleScript_SkillSideReflect:
+	playmoveanimation BS_ATTACKER, MOVE_REFLECT
+	goto BattleScript_SkillSideConditionEnd
+BattleScript_SkillSideLightScreen:
+	playmoveanimation BS_ATTACKER, MOVE_LIGHT_SCREEN
+	goto BattleScript_SkillSideConditionEnd
+BattleScript_SkillSideAuroraVeil:
+	playmoveanimation BS_ATTACKER, MOVE_AURORA_VEIL
+	goto BattleScript_SkillSideConditionEnd
+BattleScript_SkillSideSafeguard:
+	playmoveanimation BS_ATTACKER, MOVE_SAFEGUARD
+	goto BattleScript_SkillSideConditionEnd
+BattleScript_SkillSideMist:
+	playmoveanimation BS_ATTACKER, MOVE_MIST
+	goto BattleScript_SkillSideConditionEnd
+BattleScript_SkillSideTailwind:
+	playmoveanimation BS_ATTACKER, MOVE_TAILWIND
+	goto BattleScript_SkillSideConditionEnd
+BattleScript_SkillSideLuckyChant:
+	playmoveanimation BS_ATTACKER, MOVE_LUCKY_CHANT
+	goto BattleScript_SkillSideConditionEnd
+BattleScript_SkillSideSwamp:
+	playanimation BS_TARGET, B_ANIM_SWAMP
+	goto BattleScript_SkillSideConditionEnd
+BattleScript_SkillSideSeaOfFire:
+	playanimation BS_TARGET, B_ANIM_SEA_OF_FIRE
+	goto BattleScript_SkillSideConditionEnd
+BattleScript_SkillSideRainbow:
+	playanimation BS_ATTACKER, B_ANIM_RAINBOW
+BattleScript_SkillSideConditionEnd:
+	waitanimation
+	restoreattackerandtargetfrom34
+	return
+
+@ chooser: SKILL_FIELD_*, gStackBattler1 uses it
+BattleScript_SkillField::
+	saveattackertostack3
+	copybyte gBattlerAttacker, gStackBattler1
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_FIELD_WONDER_ROOM, BattleScript_SkillFieldWonderRoom
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_FIELD_MAGIC_ROOM, BattleScript_SkillFieldMagicRoom
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_FIELD_INVERSE_ROOM, BattleScript_SkillFieldInverseRoom
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_FIELD_GRAVITY, BattleScript_SkillFieldGravity
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_FIELD_MUD_SPORT, BattleScript_SkillFieldMudSport
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_FIELD_WATER_SPORT, BattleScript_SkillFieldWaterSport
+	jumpifbyte CMP_EQUAL, cMULTISTRING_CHOOSER, SKILL_FIELD_QUASH, BattleScript_SkillFieldQuash
+	playmoveanimation BS_ATTACKER, MOVE_TRICK_ROOM
+	goto BattleScript_SkillFieldEnd
+BattleScript_SkillFieldWonderRoom:
+	playmoveanimation BS_ATTACKER, MOVE_WONDER_ROOM
+	goto BattleScript_SkillFieldEnd
+BattleScript_SkillFieldMagicRoom:
+	playmoveanimation BS_ATTACKER, MOVE_MAGIC_ROOM
+	goto BattleScript_SkillFieldEnd
+BattleScript_SkillFieldInverseRoom:
+	playmoveanimation BS_ATTACKER, MOVE_INVERSE_ROOM
+	goto BattleScript_SkillFieldEnd
+BattleScript_SkillFieldGravity:
+	playmoveanimation BS_ATTACKER, MOVE_GRAVITY
+	goto BattleScript_SkillFieldEnd
+BattleScript_SkillFieldMudSport:
+	playmoveanimation BS_ATTACKER, MOVE_MUD_SPORT
+	goto BattleScript_SkillFieldEnd
+BattleScript_SkillFieldWaterSport:
+	playmoveanimation BS_ATTACKER, MOVE_WATER_SPORT
+	goto BattleScript_SkillFieldEnd
+BattleScript_SkillFieldQuash:
+	playmoveanimation BS_ATTACKER, MOVE_QUASH
+BattleScript_SkillFieldEnd:
+	waitanimation
+	readattackerfromstack3
+	return
+
+@ chooser: MOVE_EFFECT_* (all under 256), gStackBattler1 gives it to gStackBattler2. The move effect isn't
+@ kept per script like the chooser, so it's set here
+BattleScript_SkillStatus::
+	sethword sMOVE_EFFECT, 0
+	copybyte sMOVE_EFFECT, cMULTISTRING_CHOOSER
+	goto BattleScript_AbilityStatusEffectSafe
+
+@ The end of BattleScript_EffectPowerTrick on gStackBattler2
+BattleScript_SkillPowerTrick::
+	saveattackerandtargetto34
+	copybyte gBattlerAttacker, gStackBattler2
+	playmoveanimation BS_ATTACKER, MOVE_POWER_TRICK
+	waitanimation
+	powertrick BS_ATTACKER
+	printstring STRINGID_PKMNSWITCHEDATKANDDEF
+	waitmessage B_WAIT_TIME_LONG
+	restoreattackerandtargetfrom34
+	return
+
 BattleScript_AnnounceBattleSkill::
 	extraskillpopup 1
 	setbyte cMULTISTRING_CHOOSER, TABLE_SPECIAL_BATTLE_SKILL_ANNOUNCE
@@ -12455,29 +12503,36 @@ BattleScript_AnnounceBattleSkill::
 	waitmessage B_WAIT_TIME_LONG
 	return
 
-BattleScript_AnnounceBattleSkillEnd3::
-	call BattleScript_AnnounceBattleSkill
+@ So the last line of a chain of scripts stays up before the next one prints
+BattleScript_WaitMessageEnd3::
+	waitmessage B_WAIT_TIME_LONG
 	end3
 
-BattleScript_ExtraSkillEviolite::
+@ Same, for skills that fire in the middle of another script (a move hitting, a Pokemon fainting...)
+BattleScript_WaitMessageReturn::
+	waitmessage B_WAIT_TIME_LONG
+	return
+
+BattleScript_AnnounceBattleSkillEnd3::
 	call BattleScript_AnnounceBattleSkill
-	playSE SE_M_DETECT
-	playSE SE_M_BRICK_BREAK
 	end3
 
 BattleScript_ExtraAbilities1::
 	call BattleScript_ExtraSkillPopup
 	printstring STRINGID_EXTRA_ABILITIES_1
+	waitmessage B_WAIT_TIME_LONG
 	end2
 
 BattleScript_ExtraAbilities2::
 	call BattleScript_ExtraSkillPopup
 	printstring STRINGID_EXTRA_ABILITIES_2
+	waitmessage B_WAIT_TIME_LONG
 	end2
 
 BattleScript_ExtraAbilities3::
 	call BattleScript_ExtraSkillPopup
 	printstring STRINGID_EXTRA_ABILITIES_3
+	waitmessage B_WAIT_TIME_LONG
 	end2
 
 BattleScript_ExtraSkillNoProtect::
@@ -12774,3 +12829,8 @@ BattleScript_ExtraSkillTerrainFireSea::
 	call BattleScript_SeaOfFireStart
 	restoreattackerandtargetfrom34
 	end2
+
+BattleScript_LightWieldActivated::
+	printstring STRINGID_LIGHT_WIELD_ACTIVATED
+	waitmessage B_WAIT_TIME_LONG
+	end3

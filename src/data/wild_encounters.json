@@ -2653,7 +2653,7 @@
               {
                 "min_level": 3,
                 "max_level": 3,
-                "species": "SPECIES_PIDGEOTTO"
+                "species": "SPECIES_SWARMOS"
               },
               {
                 "min_level": 3,
@@ -6969,7 +6969,7 @@
               {
                 "min_level": 5,
                 "max_level": 5,
-                "species": "SPECIES_MEW"
+                "species": "SPECIES_WYNAUT"
               }
             ]
           },
@@ -9234,7 +9234,7 @@
               {
                 "min_level": 40,
                 "max_level": 40,
-                "species": "SPECIES_IRON_TREADS"
+                "species": "SPECIES_IRON_SABER"
               },
               {
                 "min_level": 40,
@@ -9393,7 +9393,7 @@
               {
                 "min_level": 42,
                 "max_level": 42,
-                "species": "SPECIES_GOUGING_FIRE"
+                "species": "SPECIES_CLAWED_MIMIC"
               },
               {
                 "min_level": 44,
@@ -11733,7 +11733,7 @@
               {
                 "min_level": 3,
                 "max_level": 3,
-                "species": "SPECIES_AUDINO"
+                "species": "SPECIES_SWARMOS"
               }
             ]
           }
@@ -11871,7 +11871,7 @@
               {
                 "min_level": 32,
                 "max_level": 32,
-                "species": "SPECIES_JYNX"
+                "species": "SPECIES_CAMEBERG"
               }
             ]
           }
@@ -13563,7 +13563,7 @@
               {
                 "min_level": 10,
                 "max_level": 12,
-                "species": "SPECIES_WOOBAT"
+                "species": "SPECIES_NUMBERG"
               },
               {
                 "min_level": 10,
@@ -13777,7 +13777,7 @@
               {
                 "min_level": 3,
                 "max_level": 3,
-                "species": "SPECIES_SNOVER"
+                "species": "SPECIES_NUMBERG"
               },
               {
                 "min_level": 3,

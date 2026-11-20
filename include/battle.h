@@ -160,7 +160,10 @@ struct VolatileStruct {
     u8 hazardDamaged:1;
     u8 iceStatue:1;
     u8 usedMonotypeEntry:1;
+    u8 usedSkillEntry:1;
     u8 drenched:2;
+    u8 turnsOnField;              // full turns since it came in
+    u32 oncePerSwitchIn;          // once-only effects that already fired, see BattleStruct
 };
 
 struct RoundStruct {
@@ -369,7 +372,7 @@ struct AI_ThinkingStruct {
     u8 aiState;
     u8 movesetIndex;
     u16 moveConsidered;
-    s8 score[MAX_MON_MOVES];
+    s16 score[MAX_MON_MOVES];
     u32 funcResult;
     u32 aiFlags;
     u8 aiAction;
@@ -586,6 +589,7 @@ typedef enum {
 
 struct ExtraAttackActionStruct {
     AbilityEnum ability;
+    BattleSkillEnum skill;
     MoveEnum move;
     u8 movePower;
     u8 attacker:2;
@@ -706,7 +710,7 @@ struct BattleStruct {
     u16 hpBefore[MAX_BATTLERS_COUNT];  // Hp of battlers before using a move. For Berserk
     bool8 spriteIgnore0Hp;
     struct Illusion illusion[MAX_BATTLERS_COUNT];
-    s8 aiFinalScore[MAX_BATTLERS_COUNT][MAX_BATTLERS_COUNT][MAX_MON_MOVES];  // AI, target, moves to make debugging easier
+    s16 aiFinalScore[MAX_BATTLERS_COUNT][MAX_BATTLERS_COUNT][MAX_MON_MOVES];  // AI, target, moves to make debugging easier
     u8 aiMoveOrAction[MAX_BATTLERS_COUNT];
     u8 aiChosenTarget[MAX_BATTLERS_COUNT];
     u8 soulheartBattlerId;
@@ -732,7 +736,11 @@ struct BattleStruct {
     u8 firstTurnAbilityLoopCounter:4;
     u8 ranEndTurnEffects:1;
     u8 canProcessSwitches:1;
-    u8 ranSkillAnnounce:1;
+    u8 skillAnnounceCount:3;  // gActiveSkills done with onBattleStart
+    // Once-only effects that already fired, a bit each, with oncePerSwitchIn in VolatileStruct.
+    // Battle skills take theirs by skill slot (OnceBit in battle_skills.cc)
+    u32 oncePerPokemon[2][PARTY_SIZE];  // per side and party slot
+    u32 oncePerBattle;
 };
 
 #define GET_MOVE_TYPE(move, typeArg)                         \
