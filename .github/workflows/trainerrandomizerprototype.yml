@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download source
+      - name: Download upcoming source
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -20,7 +20,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          curl -fL --retry 3 \
+          curl --fail --location --retry 3 \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${REPOSITORY}/zipball/upcoming" \
@@ -32,20 +32,28 @@ jobs:
           from pathlib import Path
           from zipfile import ZipFile
 
-          with ZipFile("source.zip") as z:
-              z.extractall("source")
+          with ZipFile("source.zip") as archive:
+              archive.extractall("source")
 
-          roots = [p for p in Path("source").iterdir()
-                   if p.is_dir()]
-          assert len(roots) == 1
+          roots = [
+              p for p in Path("source").iterdir()
+              if p.is_dir()
+          ]
+
+          if len(roots) != 1:
+              raise RuntimeError("Unexpected archive layout")
 
           root = roots[0]
-          for p in list(root.iterdir()):
-              p.rename(Path("source") / p.name)
+          for item in list(root.iterdir()):
+              item.rename(Path("source") / item.name)
           root.rmdir()
+
+          assert Path("source/src/battle_main.c").exists()
+          assert Path("source/src/ui_intro_options.c").exists()
+          assert Path("source/include/global.h").exists()
           PY
 
-      - name: Apply experimental patch
+      - name: Apply trainer randomizer patch
         shell: bash
         run: |
           set -euo pipefail
@@ -54,19 +62,21 @@ jobs:
           from pathlib import Path
           import re
 
-          root = Path("source")
+          ROOT = Path("source")
+          changed = []
 
-          def load(name):
-              return (root / name).read_text(
+          def read(path):
+              return (ROOT / path).read_text(
                   encoding="utf-8"
               )
 
-          def save(name, data):
-              (root / name).write_text(
-                  data, encoding="utf-8"
+          def write(path, content):
+              (ROOT / path).write_text(
+                  content, encoding="utf-8"
               )
+              changed.append(path)
 
-          def replace_once(text, old, new, label):
+          def replace_exact(text, old, new, label):
               count = text.count(old)
               if count != 1:
                   raise RuntimeError(
@@ -74,39 +84,53 @@ jobs:
                   )
               return text.replace(old, new, 1)
 
-          # -----------------------------------------
-          # 1. SaveBlock2: use one spare bit
-          # -----------------------------------------
+          def replace_regex(text, pattern, replacement, label):
+              result, count = re.subn(
+                  pattern,
+                  lambda m: replacement,
+                  text,
+                  count=1,
+                  flags=re.DOTALL
+              )
+              if count != 1:
+                  raise RuntimeError(
+                      f"{label}: expected 1 match, got {count}"
+                  )
+              return result
+
+          # ---------------------------------------
+          # Save flag
+          # ---------------------------------------
 
           path = "include/global.h"
-          text = load(path)
+          text = read(path)
 
-          text = replace_once(
+          text = replace_regex(
               text,
-              "u8 filler:2;",
+              r"\bu8\s+filler\s*:\s*2\s*;",
               "u8 trainerRandomizedMode:1;\n"
               "    u8 filler:1;",
               "SaveBlock2 flag"
           )
 
-          save(path, text)
+          write(path, text)
 
-          # -----------------------------------------
-          # 2. Intro menu
-          # -----------------------------------------
+          # ---------------------------------------
+          # Intro options
+          # ---------------------------------------
 
           path = "src/ui_intro_options.c"
-          text = load(path)
+          text = read(path)
 
-          text = replace_once(
+          text = replace_exact(
               text,
+              "SETTING_RANDOMIZER_ABILITY_MODE,",
+              "SETTING_TRAINER_RANDOMIZER_MODE,\n"
               "    SETTING_RANDOMIZER_ABILITY_MODE,",
-              "    SETTING_TRAINER_RANDOMIZER_MODE,\n"
-              "    SETTING_RANDOMIZER_ABILITY_MODE,",
-              "Menu enum"
+              "Menu setting enum"
           )
 
-          menu_option = '''
+          menu_entry = r'''
               [SETTING_TRAINER_RANDOMIZER_MODE] =
               {
                   .title = _("Trainer Randomizer"),
@@ -116,23 +140,23 @@ jobs:
                   },
                   .optionDescription = {
                       _("Trainer teams stay unchanged."),
-                      _("Trainer species are randomized.\\n"
+                      _("Trainer species are randomized.\n"
                         "The same seed gives the same teams."),
                   },
                   .numOptions = 2,
               },
           '''
 
-          text = replace_once(
+          text = replace_exact(
               text,
-              "    [SETTING_RANDOMIZER_ABILITY_MODE] =",
-              menu_option +
-              "    [SETTING_RANDOMIZER_ABILITY_MODE] =",
-              "Menu option"
+              "[SETTING_RANDOMIZER_ABILITY_MODE] =",
+              menu_entry +
+              "\n    [SETTING_RANDOMIZER_ABILITY_MODE] =",
+              "Trainer menu entry"
           )
 
-          save_anchor = (
-              "    gSaveBlock2Ptr->innaterandomizedMode"
+          save_marker = (
+              "gSaveBlock2Ptr->innaterandomizedMode"
           )
 
           save_code = '''
@@ -144,23 +168,40 @@ jobs:
               if (gSaveBlock2Ptr->trainerRandomizedMode &&
                   VarGet(VAR_RANDOMIZED_SEED) == 0)
               {
-                  u16 seed = Random();
-                  if (seed == 0)
-                      seed = 1;
-                  VarSet(VAR_RANDOMIZED_SEED, seed);
+                  u16 trainerSeed = Random();
+                  if (trainerSeed == 0)
+                      trainerSeed = 1;
+                  VarSet(VAR_RANDOMIZED_SEED, trainerSeed);
               }
 
           '''
 
-          text = replace_once(
-              text,
-              save_anchor,
-              save_code + save_anchor,
-              "Save menu option"
+          # Insert only in SaveOptionsData.
+          start = text.index("static void SaveOptionsData()")
+          end = text.index(
+              "static void LoadOptionsData()", start
           )
 
-          load_anchor = (
-              "    sMenuDataPtr->temporal_settings"
+          section = text[start:end]
+
+          section = replace_exact(
+              section,
+              save_marker,
+              save_code + save_marker,
+              "Save trainer option"
+          )
+
+          text = text[:start] + section + text[end:]
+
+          start = text.index("static void LoadOptionsData()")
+          end = text.index(
+              "void Intro_Options_Menu_Init", start
+          )
+
+          section = text[start:end]
+
+          load_marker = (
+              "sMenuDataPtr->temporal_settings"
               "[SETTING_RANDOMIZER_INNATE_MODE]"
           )
 
@@ -171,25 +212,246 @@ jobs:
 
           '''
 
-          text = replace_once(
-              text,
-              load_anchor,
-              load_code + load_anchor,
-              "Load menu option"
+          section = replace_exact(
+              section,
+              load_marker,
+              load_code + load_marker,
+              "Load trainer option"
           )
 
-          save(path, text)
+          text = text[:start] + section + text[end:]
+          write(path, text)
 
-          # -----------------------------------------
-          # 3. Trainer species generation
-          # -----------------------------------------
+          # ---------------------------------------
+          # Trainer battle implementation
+          # ---------------------------------------
 
           path = "src/battle_main.c"
-          text = load(path)
+          text = read(path)
 
+          # Find the actual function definition,
+          # not its forward declaration.
+          pattern = re.compile(
+              r"static\s+u8\s+CreateNPCTrainerParty"
+              r"\s*\([^;]*?\)\s*\{",
+              re.DOTALL
+          )
+
+          matches = list(pattern.finditer(text))
+          if len(matches) != 1:
+              raise RuntimeError(
+                  "Cannot uniquely locate trainer function"
+              )
+
+          match = matches[0]
+          brace = text.index("{", match.start())
+          depth = 0
+          function_end = None
+
+          for pos in range(brace, len(text)):
+              if text[pos] == "{":
+                  depth += 1
+              elif text[pos] == "}":
+                  depth -= 1
+                  if depth == 0:
+                      function_end = pos + 1
+                      break
+
+          if function_end is None:
+              raise RuntimeError(
+                  "Trainer function has unmatched braces"
+              )
+
+          function = text[match.start():function_end]
+
+          # Identify the original creation block.
+          creation_pattern = (
+              r"if\s*\(\s*trainerNum\s*==\s*"
+              r"TRAINER_OLDPLAYER\s*\)"
+              r"\s*\{\s*"
+              r"species\s*=\s*Random\(\)\s*%\s*500\s*;"
+              r"\s*CreateMon\s*\(\s*&party\[i\]\s*,"
+              r"\s*species\s*,.*?\)\s*;"
+              r"\s*\}\s*else\s*"
+              r"CreateMon\s*\(\s*&party\[i\]\s*,"
+              r"\s*partyData\[i\]\.species\s*,.*?\)\s*;"
+          )
+
+          creation_matches = list(
+              re.finditer(
+                  creation_pattern,
+                  function,
+                  re.DOTALL
+              )
+          )
+
+          if len(creation_matches) != 1:
+              raise RuntimeError(
+                  "Cannot uniquely locate trainer "
+                  "species creation block"
+              )
+
+          # Use the original CreateMon argument list,
+          # changing only its species argument.
+          creation = creation_matches[0].group()
+          original_call = re.search(
+              r"CreateMon\s*\(\s*&party\[i\]\s*,"
+              r"\s*partyData\[i\]\.species\s*,"
+              r".*?\)\s*;",
+              creation,
+              re.DOTALL
+          )
+
+          if original_call is None:
+              raise RuntimeError(
+                  "Cannot extract original CreateMon call"
+              )
+
+          randomized_call = re.sub(
+              r"partyData\[i\]\.species",
+              "species",
+              original_call.group(),
+              count=1
+          )
+
+          replacement = '''
+              prototypeRandomized = FALSE;
+
+              if (trainerNum == TRAINER_OLDPLAYER) {
+                  species = Random() % 500;
+                  CreateMon(&party[i], species, level, 31,
+                            TRUE, personalityValue,
+                            OT_ID_RANDOM_NO_SHINY, 0);
+              } else {
+                  species = partyData[i].species;
+
+                  if (gSaveBlock2Ptr->trainerRandomizedMode) {
+                      species = GetPrototypeTrainerSpecies(
+                          trainerNum, i,
+                          gSaveBlock2Ptr->gameDifficulty,
+                          species
+                      );
+
+                      prototypeRandomized =
+                          species != partyData[i].species;
+                  }
+
+                  RANDOMIZED_CREATE_MON
+              }
+          '''.replace(
+              "RANDOMIZED_CREATE_MON",
+              randomized_call
+          )
+
+          function = (
+              function[:creation_matches[0].start()] +
+              replacement +
+              function[creation_matches[0].end():]
+          )
+
+          # Add a local flag near the beginning of
+          # the function, before executable statements.
+          local_pattern = (
+              r"(\b(?:u8|u16|u32|s8|s16|s32|bool8)"
+              r"\s+\w+(?:\s*=\s*[^;]+)?\s*;)"
+          )
+
+          local_match = re.search(
+              local_pattern, function
+          )
+
+          if local_match is None:
+              raise RuntimeError(
+                  "Cannot locate trainer local declarations"
+              )
+
+          pos = local_match.end()
+          function = (
+              function[:pos] +
+              "\n    bool8 prototypeRandomized = FALSE;" +
+              function[pos:]
+          )
+
+          # Keep species-specific ability from CreateMon.
+          function = replace_regex(
+              function,
+              r"SetMonData\s*\(\s*&party\[i\]\s*,"
+              r"\s*MON_DATA_ABILITY_NUM\s*,"
+              r"\s*&partyData\[i\]\.ability\s*\)\s*;",
+              "if (!prototypeRandomized)\n"
+              "            SetMonData(&party[i], "
+              "MON_DATA_ABILITY_NUM, "
+              "&partyData[i].ability);",
+              "Trainer ability"
+          )
+
+          # Avoid retaining a potentially incompatible item.
+          function = replace_regex(
+              function,
+              r"SetMonData\s*\(\s*&party\[i\]\s*,"
+              r"\s*MON_DATA_HELD_ITEM\s*,"
+              r"\s*&partyData\[i\]\.heldItem\s*\)\s*;",
+              "if (!prototypeRandomized)\n"
+              "            SetMonData(&party[i], "
+              "MON_DATA_HELD_ITEM, "
+              "&partyData[i].heldItem);",
+              "Trainer held item"
+          )
+
+          # Keep the original moveset only when
+          # the original species is used.
+          move_pattern = (
+              r"SetMonData\s*\(\s*&party\[i\]\s*,"
+              r"\s*MON_DATA_MOVE1\s*\+\s*j\s*,"
+              r"\s*&partyData\[i\]\.moves\[j\]\s*\)\s*;"
+          )
+
+          move_matches = list(
+              re.finditer(move_pattern, function)
+          )
+
+          if len(move_matches) != 1:
+              raise RuntimeError(
+                  "Cannot uniquely locate original moves"
+              )
+
+          # The original moves loop is guarded later,
+          # after the code's complete structure is checked.
+          # Do not silently create an invalid moveset.
+          loop_start = function.rfind(
+              "for (j = 0; j < MAX_MON_MOVES; j++)",
+              0,
+              move_matches[0].start()
+          )
+
+          if loop_start < 0:
+              raise RuntimeError(
+                  "Cannot locate trainer moves loop"
+              )
+
+          # The existing branch should be an else block
+          # following TRAINER_OLDPLAYER's move generation.
+          prefix = function[:loop_start]
+          else_match = re.search(
+              r"\}\s*else\s*\{\s*$",
+              prefix
+          )
+
+          if else_match is None:
+              raise RuntimeError(
+                  "Cannot safely guard original moves branch"
+              )
+
+          function = (
+              function[:else_match.start()] +
+              "} else if (!prototypeRandomized) {" +
+              function[else_match.end():]
+          )
+
+          # Insert helper before function definition.
           helper = '''
-          // Experimental deterministic trainer randomizer.
-          // No global RNG calls are used here.
+          // Experimental trainer species randomizer.
+          // Uses a local seed: no battle RNG consumption.
           static SpeciesEnum GetPrototypeTrainerSpecies(
               u16 trainerNum,
               u8 slot,
@@ -227,117 +489,38 @@ jobs:
 
           '''
 
-          anchor = (
-              "static u8 CreateNPCTrainerParty("
-              "struct Pokemon* party, u16 trainerNum, "
-              "bool8 firstTrainer) {"
+          text = (
+              text[:match.start()] +
+              helper +
+              function +
+              text[function_end:]
           )
 
-          text = replace_once(
-              text, anchor, helper + anchor,
-              "Trainer helper"
+          write(path, text)
+
+          # ---------------------------------------
+          # Final validation
+          # ---------------------------------------
+
+          assert len(changed) == 3
+          assert "trainerRandomizedMode" in read(
+              "include/global.h"
+          )
+          assert "SETTING_TRAINER_RANDOMIZER_MODE" in read(
+              "src/ui_intro_options.c"
+          )
+          assert "GetPrototypeTrainerSpecies" in read(
+              "src/battle_main.c"
           )
 
-          function_start = text.index(anchor)
-          function_end = text.index(
-              "\nvoid VBlankCB_Battle", function_start
-          )
-
-          before = text[:function_start]
-          function = text[function_start:function_end]
-          after = text[function_end:]
-
-          function = replace_once(
-              function,
-              "    u32 nameHash = 0;",
-              "    u32 nameHash = 0;\n"
-              "    bool8 prototypeRandomized = FALSE;",
-              "Trainer local state"
-          )
-
-          old_creation = '''
-              if (trainerNum == TRAINER_OLDPLAYER) {
-                  species = Random() % 500;
-                  CreateMon(&party[i], species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
-              } else
-                  CreateMon(&party[i], partyData[i].species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
-          '''
-
-          new_creation = '''
-              prototypeRandomized = FALSE;
-
-              if (trainerNum == TRAINER_OLDPLAYER) {
-                  species = Random() % 500;
-                  CreateMon(&party[i], species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
-              } else {
-                  species = partyData[i].species;
-
-                  if (gSaveBlock2Ptr->trainerRandomizedMode) {
-                      species = GetPrototypeTrainerSpecies(
-                          trainerNum, i, difficultySetting, species
-                      );
-                      prototypeRandomized =
-                          species != partyData[i].species;
-                  }
-
-                  CreateMon(&party[i], species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
-              }
-          '''
-
-          function = replace_once(
-              function,
-              old_creation,
-              new_creation,
-              "Trainer species creation"
-          )
-
-          function = replace_once(
-              function,
-              "SetMonData(&party[i], MON_DATA_HELD_ITEM, "
-              "&partyData[i].heldItem);",
-              "if (!prototypeRandomized)\n"
-              "                SetMonData(&party[i], "
-              "MON_DATA_HELD_ITEM, "
-              "&partyData[i].heldItem);",
-              "Held item"
-          )
-
-          function = replace_once(
-              function,
-              "SetMonData(&party[i], MON_DATA_ABILITY_NUM, "
-              "&partyData[i].ability);",
-              "if (!prototypeRandomized)\n"
-              "                SetMonData(&party[i], "
-              "MON_DATA_ABILITY_NUM, "
-              "&partyData[i].ability);",
-              "Ability"
-          )
-
-          function = replace_once(
-              function,
-              "} else {\n"
-              "                for (j = 0; j < MAX_MON_MOVES; j++) {\n"
-              "                    SetMonData(&party[i], "
-              "MON_DATA_MOVE1 + j, &partyData[i].moves[j]);",
-              "} else if (!prototypeRandomized) {\n"
-              "                for (j = 0; j < MAX_MON_MOVES; j++) {\n"
-              "                    SetMonData(&party[i], "
-              "MON_DATA_MOVE1 + j, &partyData[i].moves[j]);",
-              "Original trainer moves"
-          )
-
-          text = before + function + after
-          save(path, text)
-
-          print("Patch applied to:")
-          print(" - include/global.h")
-          print(" - src/ui_intro_options.c")
-          print(" - src/battle_main.c")
+          print("Patch prepared successfully")
+          for path in changed:
+              print("Modified:", path)
           PY
 
           python3 patch.py
 
-      - name: Create prototype branch
+      - name: Publish prototype as one atomic commit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -345,7 +528,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          python3 - <<'PY'
+          cat > publish.py <<'PY'
           import os
           import json
           import base64
@@ -353,18 +536,21 @@ jobs:
           import urllib.error
           from pathlib import Path
 
-          repo = os.environ["REPOSITORY"]
+          repository = os.environ["REPOSITORY"]
           token = os.environ["GH_TOKEN"]
-          branch = "trainer-randomizer-test"
-          base = f"https://api.github.com/repos/{repo}"
 
-          def api(method, endpoint, payload=None):
+          branch = "trainer-randomizer-test"
+          api_base = (
+              f"https://api.github.com/repos/{repository}"
+          )
+
+          def request(method, endpoint, payload=None):
               data = None
               if payload is not None:
                   data = json.dumps(payload).encode()
 
-              request = urllib.request.Request(
-                  base + endpoint,
+              req = urllib.request.Request(
+                  api_base + endpoint,
                   data=data,
                   method=method,
                   headers={
@@ -375,28 +561,33 @@ jobs:
                   }
               )
 
-              with urllib.request.urlopen(request) as r:
-                  return json.load(r)
+              with urllib.request.urlopen(req) as response:
+                  return json.load(response)
 
-          source = api(
+          source_ref = request(
               "GET", "/git/ref/heads/upcoming"
           )
-          sha = source["object"]["sha"]
+
+          source_sha = source_ref["object"]["sha"]
 
           try:
-              api("GET", f"/git/ref/heads/{branch}")
-              raise RuntimeError(
-                  "Prototype branch already exists. "
-                  "Delete it manually before rerunning."
+              request(
+                  "GET", f"/git/ref/heads/{branch}"
               )
-          except urllib.error.HTTPError as e:
-              if e.code != 404:
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
                   raise
+          else:
+              raise RuntimeError(
+                  f"Branch {branch} already exists. "
+                  "No changes were published."
+              )
 
-          api("POST", "/git/refs", {
-              "ref": f"refs/heads/{branch}",
-              "sha": sha
-          })
+          source_commit = request(
+              "GET", f"/git/commits/{source_sha}"
+          )
+
+          base_tree = source_commit["tree"]["sha"]
 
           files = [
               "include/global.h",
@@ -404,32 +595,70 @@ jobs:
               "src/battle_main.c",
           ]
 
+          entries = []
+
           for filename in files:
-              original = api(
-                  "GET",
-                  f"/contents/{filename}?ref={branch}"
+              data = Path(
+                  "source", filename
+              ).read_bytes()
+
+              blob = request(
+                  "POST",
+                  "/git/blobs",
+                  {
+                      "content": base64.b64encode(
+                          data
+                      ).decode(),
+                      "encoding": "base64"
+                  }
               )
 
-              content = base64.b64encode(
-                  Path("source", filename).read_bytes()
-              ).decode()
-
-              api("PUT", f"/contents/{filename}", {
-                  "message": (
-                      "Prototype trainer randomizer: "
-                      + filename
-                  ),
-                  "content": content,
-                  "sha": original["sha"],
-                  "branch": branch
+              entries.append({
+                  "path": filename,
+                  "mode": "100644",
+                  "type": "blob",
+                  "sha": blob["sha"]
               })
 
-              print("Updated:", filename)
+          tree = request(
+              "POST",
+              "/git/trees",
+              {
+                  "base_tree": base_tree,
+                  "tree": entries
+              }
+          )
 
-          print("Created branch:", branch)
+          commit = request(
+              "POST",
+              "/git/commits",
+              {
+                  "message": (
+                      "Experimental trainer randomizer"
+                  ),
+                  "tree": tree["sha"],
+                  "parents": [source_sha]
+              }
+          )
+
+          # Create the branch only after all
+          # three modified files are ready.
+          request(
+              "POST",
+              "/git/refs",
+              {
+                  "ref": f"refs/heads/{branch}",
+                  "sha": commit["sha"]
+              }
+          )
+
+          print("Created:", branch)
+          print("Commit:", commit["sha"])
           PY
 
-      - name: Upload patch files
+          python3 publish.py
+
+      - name: Upload modified source files
         if: always()
         uses: actions/upload-artifact@v4
         with:
