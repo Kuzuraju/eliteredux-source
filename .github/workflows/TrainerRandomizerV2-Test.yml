@@ -62,7 +62,7 @@ jobs:
            void CreateSecretBaseEnemyParty(struct SecretBase* secretBaseRecord);
            u8 GetSecretBaseTrainerPicIndex(void);
           diff --git a/src/battle_main.c b/src/battle_main.c
-          index 3768b301..7612c50c 100644
+          index 3768b301..82980c6c 100644
           --- a/src/battle_main.c
           +++ b/src/battle_main.c
           @@ -48,6 +48,7 @@
@@ -73,7 +73,7 @@ jobs:
            #include "mgba_printf/mgba.h"
            #include "mgba_printf/mini_printf.h"
            #include "palette.h"
-          @@ -1729,23 +1730,117 @@ static void sub_8038538(struct Sprite* sprite) {
+          @@ -1729,23 +1730,127 @@ static void sub_8038538(struct Sprite* sprite) {
            // Deterministic per trainer, slot and difficulty; never consumes battle RNG.
            static SpeciesEnum GetPrototypeTrainerSpecies(u16 trainerNum, u8 slot, u8 difficulty, SpeciesEnum original)
            {
@@ -96,7 +96,7 @@ jobs:
            
           -static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 firstTrainer) {
           -    bool8 prototypeRandomized = FALSE;
-          +// Rank moves from the species' learnsets, including level-up moves at later levels.
+          +// Rank moves the species can learn for this battle.
           +static s32 ScoreTrainerMove(u16 move, SpeciesEnum species, u16 attack, u16 spAttack,
           +                            u32 seed, const u16 *selected, u8 count)
           +{
@@ -157,11 +157,19 @@ jobs:
           +    _Static_assert(TUTOR_COUNT <= 256, "Tutor IDs must fit CanLearnTutorMove");
           +    u16 candidates[MAX_LEVEL_UP_MOVES + TUTOR_COUNT];
           +    u16 selected[MAX_MON_MOVES] = {0};
-          +    u16 candidateCount = GetLevelUpMovesBySpecies(species, candidates);
+          +    u16 candidateCount = 0;
+          +    u8 level = GetMonData(mon, MON_DATA_LEVEL, NULL);
+          +    u8 ppBonuses = 0;
           +    u16 attack = GetMonData(mon, MON_DATA_ATK, NULL);
           +    u16 spAttack = GetMonData(mon, MON_DATA_SPATK, NULL);
           +    u32 seed = ((u32)VarGet(VAR_RANDOMIZED_SEED) << 16)
           +               ^ ((u32)trainerNum * 0x9E3779B9u) ^ ((u32)(partySlot + 1) * 0x85EBCA6Bu);
+          +
+          +    const struct LevelUpMove *learnset = gLevelUpLearnsets[species];
+          +    for (u16 i = 0; i < MAX_LEVEL_UP_MOVES && learnset[i].move != LEVEL_UP_END; i++) {
+          +        if (learnset[i].level <= level)
+          +            candidates[candidateCount++] = learnset[i].move;
+          +    }
           +
           +    for (u16 tutor = 0; tutor < TUTOR_COUNT; tutor++) {
           +        if (CanLearnTutorMove(species, tutor))
@@ -182,11 +190,13 @@ jobs:
           +        }
           +        if (selected[slot] == MOVE_NONE)
           +            break;
+          +        ppBonuses |= gPPUpGetMask[slot];
           +    }
           +
+          +    SetMonData(mon, MON_DATA_PP_BONUSES, &ppBonuses);
           +    for (u8 i = 0; i < MAX_MON_MOVES; i++) {
           +        u16 move = selected[i];
-          +        u8 pp = move == MOVE_NONE ? 0 : CalculatePPWithBonus(move, 0, i);
+          +        u8 pp = move == MOVE_NONE ? 0 : CalculatePPWithBonus(move, ppBonuses, i);
           +        SetMonData(mon, MON_DATA_MOVE1 + i, &move);
           +        SetMonData(mon, MON_DATA_PP1 + i, &pp);
           +    }
@@ -196,7 +206,7 @@ jobs:
                u32 nameHash = 0;
                u32 personalityValue;
                s32 i, j = 0;
-          @@ -1851,18 +1946,17 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+          @@ -1851,18 +1956,17 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
                        if (FlagGet(FLAG_DEBUG_GODMODE)) level = 1;
            #endif
            
@@ -226,7 +236,7 @@ jobs:
            
                        // Sets Pokemon Nature
                        SetMonData(&party[i], MON_DATA_NATURE, &partyData[i].nature);
-          @@ -1909,7 +2003,9 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+          @@ -1909,7 +2013,9 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
            
                        CalculateEnemyTrainerMonStats(&party[i]);
            
