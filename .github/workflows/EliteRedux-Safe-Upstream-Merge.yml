@@ -17,7 +17,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - name: Fetch source repositories
+      - name: Fetch repositories without submodules
         shell: bash
         run: |
           set -euo pipefail
@@ -25,10 +25,8 @@ jobs:
           cd work
 
           git init -q
-
           git remote add origin \
             "https://github.com/${GITHUB_REPOSITORY}.git"
-
           git remote add upstream \
             "https://github.com/Elite-Redux/eliteredux-source.git"
 
@@ -50,21 +48,20 @@ jobs:
 
           git rev-parse origin/upcoming \
             > ../report/local-commit.txt
-
           git rev-parse upstream/upcoming \
             > ../report/upstream-commit.txt
 
           git merge-base origin/upcoming upstream/upcoming \
             > ../report/merge-base.txt
 
-      - name: Squash upstream changes safely
+      - name: Squash merge and protect custom files
         id: merge
         shell: bash
         run: |
           set -euo pipefail
           cd work
 
-          echo "Starting squash merge..."
+          echo "Starting upstream squash merge..."
 
           if git merge --squash upstream/upcoming \
             > ../report/merge-output.txt 2>&1; then
@@ -79,42 +76,51 @@ jobs:
           git diff --name-only --diff-filter=U \
             > ../report/initial-conflicts.txt
 
-          echo "Restoring all local GitHub workflows..."
+          echo "Restoring original GitHub workflows..."
 
-          # Keep every local workflow exactly as it was.
-          # This also removes new upstream workflows.
+          # Remove every upstream workflow from the
+          # working tree and Git index, including new files.
+          git rm -r -f --ignore-unmatch \
+            -- .github/workflows/ || true
+
+          rm -rf .github/workflows
+
+          # Restore all workflows from the local branch.
           git restore \
             --source=origin/upcoming \
-            --staged \
-            --worktree \
+            --staged --worktree \
             -- .github/workflows/
 
-          git diff --name-only --diff-filter=U \
-            > ../report/remaining-conflicts.txt
+          # Confirm no workflow differs from local HEAD.
+          git diff --cached --name-status \
+            origin/upcoming -- .github/workflows/ \
+            > ../report/workflow-differences.txt
 
-          git status --short \
-            > ../report/status-after-resolution.txt
-
-          if [ -s ../report/remaining-conflicts.txt ]; then
-            echo "Non-workflow conflicts remain. No push." \
+          if [ -s ../report/workflow-differences.txt ]; then
+            echo "Workflow differences remain. No push." \
               | tee ../report/result.txt
             echo "ready=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "Verifying local workflows..."
+          # Check for unresolved conflicts anywhere.
+          git diff --name-only --diff-filter=U \
+            > ../report/remaining-conflicts.txt
 
-          OLD_WORKFLOWS=$(git rev-parse \
-            origin/upcoming:.github/workflows)
+          git ls-files -u \
+            > ../report/unmerged-index.txt
 
-          NEW_WORKFLOWS=$(git rev-parse \
-            :.github/workflows)
-
-          if [ "$OLD_WORKFLOWS" != "$NEW_WORKFLOWS" ]; then
-            echo "Workflow preservation failed. No push." \
+          if [ -s ../report/remaining-conflicts.txt ] || \
+             [ -s ../report/unmerged-index.txt ]; then
+            echo "Other merge conflicts remain. No push." \
               | tee ../report/result.txt
             echo "ready=false" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+
+          if [ "$MERGE_STATUS" -ne 0 ]; then
+            echo "Initial merge had conflicts; checking resolution." \
+              > ../report/conflict-note.txt
           fi
 
           echo "All local workflows preserved." \
@@ -178,8 +184,12 @@ jobs:
           echo "Customized graphics preserved." \
             > ../report/graphics-verification.txt
 
+          # Check the final staged changes.
           git diff --cached --name-status \
             > ../report/staged-changes.txt
+
+          git status --short \
+            > ../report/status-after-resolution.txt
 
           if git diff --cached --quiet; then
             echo "No changes to publish." \
@@ -188,7 +198,7 @@ jobs:
             exit 0
           fi
 
-          echo "Squash merge ready for publication." \
+          echo "Squash merge ready. Workflows and sprites preserved." \
             | tee ../report/result.txt
 
           echo "ready=true" >> "$GITHUB_OUTPUT"
@@ -199,6 +209,15 @@ jobs:
         run: |
           set -euo pipefail
           cd work
+
+          # Verify the final commit contains no workflow
+          # changes relative to the original branch.
+          if ! git diff --cached --quiet \
+            origin/upcoming -- .github/workflows/; then
+            echo "Workflow safety check failed." \
+              | tee -a ../report/result.txt
+            exit 1
+          fi
 
           git commit -m \
             "Update Elite Redux source from official upstream"
