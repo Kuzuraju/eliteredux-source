@@ -29,7 +29,6 @@ jobs:
       - name: Fetch Trainer Randomizer V2
         run: |
           set -euo pipefail
-
           mkdir -p work report
           cd work
 
@@ -47,7 +46,6 @@ jobs:
             "refs/remotes/origin/${TEST_BRANCH}"
 
           git rev-parse HEAD > ../report/source-commit.txt
-
           git log -1 --oneline
 
       - name: Verify base ROM and prototype
@@ -60,17 +58,11 @@ jobs:
           test -f src/ui_intro_options.c
           test -f include/global.h
 
-          grep -q GetPrototypeTrainerSpecies \
-            src/battle_main.c
-
-          grep -q trainerRandomizedMode \
-            include/global.h
-
-          grep -q SETTING_TRAINER_RANDOMIZER_MODE \
-            src/ui_intro_options.c
+          grep -q GetPrototypeTrainerSpecies src/battle_main.c
+          grep -q trainerRandomizedMode include/global.h
+          grep -q SETTING_TRAINER_RANDOMIZER_MODE src/ui_intro_options.c
 
           ls -lh rom.gba
-
           echo "Prototype files verified." \
             > ../report/prototype-check.txt
 
@@ -154,6 +146,7 @@ jobs:
 
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           battle = Path("src/battle_main.c")
           pokemon = Path("src/pokemon.c")
@@ -174,13 +167,12 @@ jobs:
               source = source.replace(
                   original, replacement
               )
-              print("Replaced direct species eligibility call.")
+              print("Replaced eligibility call.")
           elif replacement in source:
-              print("Eligibility call already uses bridge.")
+              print("Eligibility call already patched.")
           else:
               raise SystemExit(
-                  "ERROR: Expected species eligibility "
-                  "call not found. Review source manually."
+                  "ERROR: Expected eligibility call not found."
               )
 
           declaration = (
@@ -188,9 +180,42 @@ jobs:
               "TrainerRandomizerSpeciesAllowed(u16 species);"
           )
 
-          if declaration not in source:
-              source = declaration + "\n" + source
+          # Remove any existing copy of the declaration.
+          source = re.sub(
+              r'(?m)^[ \t]*extern bool8[ \t]+'
+              r'TrainerRandomizerSpeciesAllowed'
+              r'\(u16 species\);[ \t]*\n?',
+              '',
+              source
+          )
 
+          # Insert the declaration after the last
+          # preprocessor include, never before headers.
+          includes = list(
+              re.finditer(
+                  r'(?m)^[ \t]*#[ \t]*include[ \t]+'
+                  r'[<"][^>"]+[>"][^\n]*(?:\n|$)',
+                  source
+              )
+          )
+
+          if not includes:
+              raise SystemExit(
+                  "ERROR: No #include found in battle_main.c."
+              )
+
+          position = includes[-1].end()
+
+          source = (
+              source[:position]
+              + "\n"
+              + declaration
+              + "\n"
+              + source[position:]
+          )
+
+          # The bridge must be implemented in pokemon.c,
+          # where the original eligibility function exists.
           function = (
               "\nbool8 TrainerRandomizerSpeciesAllowed"
               "(u16 species)\n"
@@ -200,23 +225,40 @@ jobs:
               "}\n"
           )
 
-          if (
-              "bool8 TrainerRandomizerSpeciesAllowed"
-              "(u16 species)"
-              not in target
+          if not re.search(
+              r'\bIsSpeciesRandomizerAllowed\s*\(',
+              target
           ):
-              target += function
-              print("Added species eligibility bridge.")
+              raise SystemExit(
+                  "ERROR: Eligibility function not found "
+                  "in pokemon.c."
+              )
+
+          if re.search(
+              r'\bTrainerRandomizerSpeciesAllowed'
+              r'\s*\([^)]*\)\s*\{',
+              target
+          ):
+              print("Bridge implementation already exists.")
           else:
-              print("Bridge already exists.")
+              target += function
+              print("Added bridge implementation.")
 
           battle.write_text(source)
           pokemon.write_text(target)
+
+          print(
+              "Bridge declaration inserted after includes."
+          )
           PY
 
           git diff -- \
             src/battle_main.c src/pokemon.c \
             > ../report/bridge.patch
+
+          grep -n TrainerRandomizerSpeciesAllowed \
+            src/battle_main.c src/pokemon.c \
+            > ../report/bridge-locations.txt
 
       - name: Configure debug shortcut
         run: |
