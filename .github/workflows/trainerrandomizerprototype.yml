@@ -1,4 +1,3 @@
-
 name: Trainer Randomizer Prototype
 
 on:
@@ -8,661 +7,217 @@ permissions:
   contents: write
 
 jobs:
-  create-prototype:
+  prototype:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Download upcoming source
-        shell: bash
+      - name: Download upcoming without submodules
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-
-          curl --fail --location --retry 3 \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${REPOSITORY}/zipball/upcoming" \
-            -o source.zip
-
+          curl -fL --retry 3 -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${REPOSITORY}/zipball/upcoming" -o source.zip
           mkdir source
-
           python3 - <<'PY'
           from pathlib import Path
           from zipfile import ZipFile
-
-          with ZipFile("source.zip") as archive:
-              archive.extractall("source")
-
-          roots = [
-              p for p in Path("source").iterdir()
-              if p.is_dir()
-          ]
-
-          if len(roots) != 1:
-              raise RuntimeError("Unexpected archive layout")
-
-          root = roots[0]
-          for item in list(root.iterdir()):
-              item.rename(Path("source") / item.name)
-          root.rmdir()
-
-          assert Path("source/src/battle_main.c").exists()
-          assert Path("source/src/ui_intro_options.c").exists()
-          assert Path("source/include/global.h").exists()
+          with ZipFile('source.zip') as z:
+              z.extractall('source')
+          roots = [p for p in Path('source').iterdir() if p.is_dir()]
+          assert len(roots) == 1, 'Unexpected archive structure'
+          for p in list(roots[0].iterdir()):
+              p.rename(Path('source') / p.name)
+          roots[0].rmdir()
           PY
 
-      - name: Apply trainer randomizer patch
-        shell: bash
+      - name: Patch sources with guarded transformations
         run: |
           set -euo pipefail
-
           cat > patch.py <<'PY'
           from pathlib import Path
           import re
 
-          ROOT = Path("source")
-          changed = []
+          root = Path('source')
+          def load(p): return (root / p).read_text(encoding='utf-8')
+          def save(p, s): (root / p).write_text(s, encoding='utf-8')
+          def sub1(s, pattern, replacement, label, flags=0):
+              matches = list(re.finditer(pattern, s, flags))
+              if len(matches) != 1:
+                  raise RuntimeError(f'{label}: expected one match, got {len(matches)}')
+              m = matches[0]
+              return s[:m.start()] + replacement + s[m.end():]
+          def block(s, start_pattern, label):
+              matches = list(re.finditer(start_pattern, s, re.S))
+              if len(matches) != 1:
+                  raise RuntimeError(f'{label}: expected one definition, got {len(matches)}')
+              m = matches[0]
+              opening = s.index('{', m.start())
+              depth = 0
+              for i in range(opening, len(s)):
+                  if s[i] == '{': depth += 1
+                  elif s[i] == '}':
+                      depth -= 1
+                      if depth == 0: return m.start(), i+1
+              raise RuntimeError(f'{label}: unmatched braces')
 
-          def read(path):
-              return (ROOT / path).read_text(
-                  encoding="utf-8"
-              )
+          # Save bit: change only the spare two-bit field in SaveBlock2.
+          p = 'include/global.h'
+          s = load(p)
+          start = s.index('struct SaveBlock2 {')
+          end = s.index('};', start)
+          section = s[start:end]
+          section = sub1(section, r'\bu8\s+filler\s*:\s*2\s*;',
+                         'u8 trainerRandomizedMode:1;\n    u8 filler:1;', 'SaveBlock2 spare bit')
+          save(p, s[:start] + section + s[end:])
 
-          def write(path, content):
-              (ROOT / path).write_text(
-                  content, encoding="utf-8"
-              )
-              changed.append(path)
-
-          def replace_exact(text, old, new, label):
-              count = text.count(old)
-              if count != 1:
-                  raise RuntimeError(
-                      f"{label}: expected 1 match, got {count}"
-                  )
-              return text.replace(old, new, 1)
-
-          def replace_regex(text, pattern, replacement, label):
-              result, count = re.subn(
-                  pattern,
-                  lambda m: replacement,
-                  text,
-                  count=1,
-                  flags=re.DOTALL
-              )
-              if count != 1:
-                  raise RuntimeError(
-                      f"{label}: expected 1 match, got {count}"
-                  )
-              return result
-
-          # ---------------------------------------
-          # Save flag
-          # ---------------------------------------
-
-          path = "include/global.h"
-          text = read(path)
-
-          text = replace_regex(
-              text,
-              r"\bu8\s+filler\s*:\s*2\s*;",
-              "u8 trainerRandomizedMode:1;\n"
-              "    u8 filler:1;",
-              "SaveBlock2 flag"
-          )
-
-          write(path, text)
-
-          # ---------------------------------------
-          # Intro options
-          # ---------------------------------------
-
-          path = "src/ui_intro_options.c"
-          text = read(path)
-
-          text = replace_exact(
-              text,
-              "SETTING_RANDOMIZER_ABILITY_MODE,",
-              "SETTING_TRAINER_RANDOMIZER_MODE,\n"
-              "    SETTING_RANDOMIZER_ABILITY_MODE,",
-              "Menu setting enum"
-          )
-
-          menu_entry = r'''
-              [SETTING_TRAINER_RANDOMIZER_MODE] =
+          # Menu enum, table, save and load; scope the table insertion.
+          p = 'src/ui_intro_options.c'
+          s = load(p)
+          s = sub1(s, r'(?m)^([ \t]*)SETTING_RANDOMIZER_ABILITY_MODE,',
+                   '    SETTING_TRAINER_RANDOMIZER_MODE,\n    SETTING_RANDOMIZER_ABILITY_MODE,', 'Menu enum')
+          table_match = re.search(r'(?m)^\s*\[SETTING_RANDOMIZER_MODE\]\s*=', s)
+          if not table_match: raise RuntimeError('Options table not found')
+          table_end = s.find('[SETTING_RANDOMIZER_INNATE_MODE] =', table_match.end())
+          if table_end < 0: raise RuntimeError('Options table boundary not found')
+          a, b = table_match.start(), table_end
+          table = s[a:b]
+          entry = '''    [SETTING_TRAINER_RANDOMIZER_MODE] =
               {
                   .title = _("Trainer Randomizer"),
-                  .options = {
-                      _("Disabled"),
-                      _("Enabled"),
-                  },
+                  .options = { _("Disabled"), _("Enabled") },
                   .optionDescription = {
-                      _("Trainer teams stay unchanged."),
-                      _("Trainer species are randomized.\n"
-                        "The same seed gives the same teams."),
+                      _("Keep the original trainer teams."),
+                      _("Randomize trainer species with a fixed seed.")
                   },
                   .numOptions = 2,
               },
           '''
-
-          text = replace_exact(
-              text,
-              "[SETTING_RANDOMIZER_ABILITY_MODE] =",
-              menu_entry +
-              "\n    [SETTING_RANDOMIZER_ABILITY_MODE] =",
-              "Trainer menu entry"
-          )
-
-          save_marker = (
-              "gSaveBlock2Ptr->innaterandomizedMode"
-          )
-
-          save_code = '''
-              gSaveBlock2Ptr->trainerRandomizedMode =
-                  sMenuDataPtr->temporal_settings[
-                      SETTING_TRAINER_RANDOMIZER_MODE
-                  ];
-
-              if (gSaveBlock2Ptr->trainerRandomizedMode &&
-                  VarGet(VAR_RANDOMIZED_SEED) == 0)
-              {
+          table = sub1(table, r'(?m)^\s*\[SETTING_RANDOMIZER_ABILITY_MODE\]\s*=',
+                       '\n' + entry + '    [SETTING_RANDOMIZER_ABILITY_MODE] =', 'Menu entry')
+          s = s[:a] + table + s[b:]
+          a, b = block(s, r'static\s+void\s+SaveOptionsData\s*\(\s*\)\s*\{', 'SaveOptionsData')
+          sec = s[a:b]
+          insert = '''gSaveBlock2Ptr->trainerRandomizedMode = sMenuDataPtr->temporal_settings[SETTING_TRAINER_RANDOMIZER_MODE];
+              if (gSaveBlock2Ptr->trainerRandomizedMode && VarGet(VAR_RANDOMIZED_SEED) == 0) {
                   u16 trainerSeed = Random();
-                  if (trainerSeed == 0)
-                      trainerSeed = 1;
-                  VarSet(VAR_RANDOMIZED_SEED, trainerSeed);
+                  VarSet(VAR_RANDOMIZED_SEED, trainerSeed ? trainerSeed : 1);
               }
+              '''
+          sec = sub1(sec, r'gSaveBlock2Ptr->innaterandomizedMode\s*=', insert + 'gSaveBlock2Ptr->innaterandomizedMode =', 'Save setting')
+          s = s[:a] + sec + s[b:]
+          a, b = block(s, r'static\s+void\s+LoadOptionsData\s*\(\s*\)\s*\{', 'LoadOptionsData')
+          sec = s[a:b]
+          sec = sub1(sec, r'sMenuDataPtr->temporal_settings\[SETTING_RANDOMIZER_INNATE_MODE\]\s*=',
+                     'sMenuDataPtr->temporal_settings[SETTING_TRAINER_RANDOMIZER_MODE] = gSaveBlock2Ptr->trainerRandomizedMode;\n    sMenuDataPtr->temporal_settings[SETTING_RANDOMIZER_INNATE_MODE] =', 'Load setting')
+          s = s[:a] + sec + s[b:]
+          save(p, s)
 
-          '''
-
-          # Insert only in SaveOptionsData.
-          start = text.index("static void SaveOptionsData()")
-          end = text.index(
-              "static void LoadOptionsData()", start
-          )
-
-          section = text[start:end]
-
-          section = replace_exact(
-              section,
-              save_marker,
-              save_code + save_marker,
-              "Save trainer option"
-          )
-
-          text = text[:start] + section + text[end:]
-
-          start = text.index("static void LoadOptionsData()")
-          end = text.index(
-              "void Intro_Options_Menu_Init", start
-          )
-
-          section = text[start:end]
-
-          load_marker = (
-              "sMenuDataPtr->temporal_settings"
-              "[SETTING_RANDOMIZER_INNATE_MODE]"
-          )
-
-          load_code = '''
-              sMenuDataPtr->temporal_settings[
-                  SETTING_TRAINER_RANDOMIZER_MODE
-              ] = gSaveBlock2Ptr->trainerRandomizedMode;
-
-          '''
-
-          section = replace_exact(
-              section,
-              load_marker,
-              load_code + load_marker,
-              "Load trainer option"
-          )
-
-          text = text[:start] + section + text[end:]
-          write(path, text)
-
-          # ---------------------------------------
-          # Trainer battle implementation
-          # ---------------------------------------
-
-          path = "src/battle_main.c"
-          text = read(path)
-
-          # Find the actual function definition,
-          # not its forward declaration.
-          pattern = re.compile(
-              r"static\s+u8\s+CreateNPCTrainerParty"
-              r"\s*\([^;]*?\)\s*\{",
-              re.DOTALL
-          )
-
-          matches = list(pattern.finditer(text))
-          if len(matches) != 1:
-              raise RuntimeError(
-                  "Cannot uniquely locate trainer function"
-              )
-
-          match = matches[0]
-          brace = text.index("{", match.start())
-          depth = 0
-          function_end = None
-
-          for pos in range(brace, len(text)):
-              if text[pos] == "{":
-                  depth += 1
-              elif text[pos] == "}":
-                  depth -= 1
-                  if depth == 0:
-                      function_end = pos + 1
-                      break
-
-          if function_end is None:
-              raise RuntimeError(
-                  "Trainer function has unmatched braces"
-              )
-
-          function = text[match.start():function_end]
-
-          # Identify the original creation block.
-          creation_pattern = (
-              r"if\s*\(\s*trainerNum\s*==\s*"
-              r"TRAINER_OLDPLAYER\s*\)"
-              r"\s*\{\s*"
-              r"species\s*=\s*Random\(\)\s*%\s*500\s*;"
-              r"\s*CreateMon\s*\(\s*&party\[i\]\s*,"
-              r"\s*species\s*,.*?\)\s*;"
-              r"\s*\}\s*else\s*"
-              r"CreateMon\s*\(\s*&party\[i\]\s*,"
-              r"\s*partyData\[i\]\.species\s*,.*?\)\s*;"
-          )
-
-          creation_matches = list(
-              re.finditer(
-                  creation_pattern,
-                  function,
-                  re.DOTALL
-              )
-          )
-
-          if len(creation_matches) != 1:
-              raise RuntimeError(
-                  "Cannot uniquely locate trainer "
-                  "species creation block"
-              )
-
-          # Use the original CreateMon argument list,
-          # changing only its species argument.
-          creation = creation_matches[0].group()
-          original_call = re.search(
-              r"CreateMon\s*\(\s*&party\[i\]\s*,"
-              r"\s*partyData\[i\]\.species\s*,"
-              r".*?\)\s*;",
-              creation,
-              re.DOTALL
-          )
-
-          if original_call is None:
-              raise RuntimeError(
-                  "Cannot extract original CreateMon call"
-              )
-
-          randomized_call = re.sub(
-              r"partyData\[i\]\.species",
-              "species",
-              original_call.group(),
-              count=1
-          )
-
-          replacement = '''
-              prototypeRandomized = FALSE;
-
+          # Battle function. Leave OLDPLAYER special case intact.
+          p = 'src/battle_main.c'
+          s = load(p)
+          a, b = block(s, r'static\s+u8\s+CreateNPCTrainerParty\s*\([^;{}]*\)\s*\{', 'CreateNPCTrainerParty')
+          sec = s[a:b]
+          original = re.compile(r'if\s*\(\s*trainerNum\s*==\s*TRAINER_OLDPLAYER\s*\)\s*\{\s*species\s*=\s*Random\(\)\s*%\s*500\s*;\s*CreateMon\s*\(\s*&party\[i\]\s*,\s*species\s*,[^;]*;\s*\}\s*else\s*CreateMon\s*\(\s*&party\[i\]\s*,\s*partyData\[i\]\.species\s*,[^;]*;', re.S)
+          m = original.search(sec)
+          if not m or len(original.findall(sec)) != 1: raise RuntimeError('Trainer CreateMon block not uniquely found')
+          old = m.group()
+          oldplayer_call = re.search(r'CreateMon\s*\(\s*&party\[i\]\s*,\s*species\s*,[^;]*;', old, re.S).group()
+          normal_call = re.search(r'CreateMon\s*\(\s*&party\[i\]\s*,\s*partyData\[i\]\.species\s*,[^;]*;', old, re.S).group()
+          normal_call = normal_call.replace('partyData[i].species', 'species', 1)
+          replacement = '''prototypeRandomized = FALSE;
               if (trainerNum == TRAINER_OLDPLAYER) {
                   species = Random() % 500;
-                  CreateMon(&party[i], species, level, 31,
-                            TRUE, personalityValue,
-                            OT_ID_RANDOM_NO_SHINY, 0);
+                  OLDPLAYER_CALL
               } else {
                   species = partyData[i].species;
-
                   if (gSaveBlock2Ptr->trainerRandomizedMode) {
-                      species = GetPrototypeTrainerSpecies(
-                          trainerNum, i,
-                          gSaveBlock2Ptr->gameDifficulty,
-                          species
-                      );
-
-                      prototypeRandomized =
-                          species != partyData[i].species;
+                      species = GetPrototypeTrainerSpecies(trainerNum, i, gSaveBlock2Ptr->gameDifficulty, species);
+                      prototypeRandomized = (species != partyData[i].species);
                   }
-
-                  RANDOMIZED_CREATE_MON
-              }
-          '''.replace(
-              "RANDOMIZED_CREATE_MON",
-              randomized_call
-          )
-
-          function = (
-              function[:creation_matches[0].start()] +
-              replacement +
-              function[creation_matches[0].end():]
-          )
-
-          # Add a local flag near the beginning of
-          # the function, before executable statements.
-          local_pattern = (
-              r"(\b(?:u8|u16|u32|s8|s16|s32|bool8)"
-              r"\s+\w+(?:\s*=\s*[^;]+)?\s*;)"
-          )
-
-          local_match = re.search(
-              local_pattern, function
-          )
-
-          if local_match is None:
-              raise RuntimeError(
-                  "Cannot locate trainer local declarations"
-              )
-
-          pos = local_match.end()
-          function = (
-              function[:pos] +
-              "\n    bool8 prototypeRandomized = FALSE;" +
-              function[pos:]
-          )
-
-          # Keep species-specific ability from CreateMon.
-          function = replace_regex(
-              function,
-              r"SetMonData\s*\(\s*&party\[i\]\s*,"
-              r"\s*MON_DATA_ABILITY_NUM\s*,"
-              r"\s*&partyData\[i\]\.ability\s*\)\s*;",
-              "if (!prototypeRandomized)\n"
-              "            SetMonData(&party[i], "
-              "MON_DATA_ABILITY_NUM, "
-              "&partyData[i].ability);",
-              "Trainer ability"
-          )
-
-          # Avoid retaining a potentially incompatible item.
-          function = replace_regex(
-              function,
-              r"SetMonData\s*\(\s*&party\[i\]\s*,"
-              r"\s*MON_DATA_HELD_ITEM\s*,"
-              r"\s*&partyData\[i\]\.heldItem\s*\)\s*;",
-              "if (!prototypeRandomized)\n"
-              "            SetMonData(&party[i], "
-              "MON_DATA_HELD_ITEM, "
-              "&partyData[i].heldItem);",
-              "Trainer held item"
-          )
-
-          # Keep the original moveset only when
-          # the original species is used.
-          move_pattern = (
-              r"SetMonData\s*\(\s*&party\[i\]\s*,"
-              r"\s*MON_DATA_MOVE1\s*\+\s*j\s*,"
-              r"\s*&partyData\[i\]\.moves\[j\]\s*\)\s*;"
-          )
-
-          move_matches = list(
-              re.finditer(move_pattern, function)
-          )
-
-          if len(move_matches) != 1:
-              raise RuntimeError(
-                  "Cannot uniquely locate original moves"
-              )
-
-          # The original moves loop is guarded later,
-          # after the code's complete structure is checked.
-          # Do not silently create an invalid moveset.
-          loop_start = function.rfind(
-              "for (j = 0; j < MAX_MON_MOVES; j++)",
-              0,
-              move_matches[0].start()
-          )
-
-          if loop_start < 0:
-              raise RuntimeError(
-                  "Cannot locate trainer moves loop"
-              )
-
-          # The existing branch should be an else block
-          # following TRAINER_OLDPLAYER's move generation.
-          prefix = function[:loop_start]
-          else_match = re.search(
-              r"\}\s*else\s*\{\s*$",
-              prefix
-          )
-
-          if else_match is None:
-              raise RuntimeError(
-                  "Cannot safely guard original moves branch"
-              )
-
-          function = (
-              function[:else_match.start()] +
-              "} else if (!prototypeRandomized) {" +
-              function[else_match.end():]
-          )
-
-          # Insert helper before function definition.
-          helper = '''
-          // Experimental trainer species randomizer.
-          // Uses a local seed: no battle RNG consumption.
-          static SpeciesEnum GetPrototypeTrainerSpecies(
-              u16 trainerNum,
-              u8 slot,
-              u8 difficulty,
-              SpeciesEnum original)
+                  NORMAL_CALL
+              }'''.replace('OLDPLAYER_CALL', oldplayer_call).replace('NORMAL_CALL', normal_call)
+          sec = sec[:m.start()] + replacement + sec[m.end():]
+          # Put declaration directly after the opening brace (C99 declarations allowed).
+          opening = sec.index('{')
+          sec = sec[:opening+1] + '\n    bool8 prototypeRandomized = FALSE;\n' + sec[opening+1:]
+          sec = sub1(sec, r'SetMonData\s*\(\s*&party\[i\]\s*,\s*MON_DATA_ABILITY_NUM\s*,\s*&partyData\[i\]\.ability\s*\)\s*;',
+                     'if (!prototypeRandomized) SetMonData(&party[i], MON_DATA_ABILITY_NUM, &partyData[i].ability);', 'Ability override')
+          sec = sub1(sec, r'SetMonData\s*\(\s*&party\[i\]\s*,\s*MON_DATA_HELD_ITEM\s*,\s*&partyData\[i\]\.heldItem\s*\)\s*;',
+                     'if (!prototypeRandomized) SetMonData(&party[i], MON_DATA_HELD_ITEM, &partyData[i].heldItem);', 'Held item override')
+          # Reuse existing OLDPLAYER selectMoves branch for randomized species.
+          sec = sub1(sec, r'if\s*\(\s*trainerNum\s*==\s*TRAINER_OLDPLAYER\s*\)\s*\{(?=\s*for\s*\(\s*j\s*=\s*0\s*;\s*j\s*<\s*MAX_MON_MOVES)',
+                     'if (trainerNum == TRAINER_OLDPLAYER || prototypeRandomized) {', 'Moveset generation')
+          helper = '''// Deterministic per trainer, slot and difficulty; never consumes battle RNG.
+          static SpeciesEnum GetPrototypeTrainerSpecies(u16 trainerNum, u8 slot, u8 difficulty, SpeciesEnum original)
           {
               u32 seed = VarGet(VAR_RANDOMIZED_SEED);
-              SpeciesEnum candidate;
               u16 attempt;
-
-              if (seed == 0)
-                  return original;
-
+              if (!seed) return original;
               seed ^= (u32)trainerNum * 0x9E3779B9u;
               seed ^= (u32)(slot + 1) * 0x85EBCA6Bu;
               seed ^= (u32)(difficulty + 1) * 0xC2B2AE35u;
-
-              if (seed == 0)
-                  seed = 1;
-
-              for (attempt = 0; attempt < 512; attempt++)
-              {
-                  candidate = RandRangeDeterministic(
-                      1, REAL_SPECIES_COUNT - 1, &seed
-                  );
-
-                  if (IsSpeciesRandomizerAllowed(
-                      candidate, FALSE, TRUE
-                  ))
-                      return candidate;
+              if (!seed) seed = 1;
+              for (attempt = 0; attempt < 512; attempt++) {
+                  SpeciesEnum candidate = RandRangeDeterministic(1, REAL_SPECIES_COUNT - 1, &seed);
+                  if (IsSpeciesRandomizerAllowed(candidate, FALSE, TRUE)) return candidate;
               }
-
               return original;
           }
 
           '''
-
-          text = (
-              text[:match.start()] +
-              helper +
-              function +
-              text[function_end:]
-          )
-
-          write(path, text)
-
-          # ---------------------------------------
-          # Final validation
-          # ---------------------------------------
-
-          assert len(changed) == 3
-          assert "trainerRandomizedMode" in read(
-              "include/global.h"
-          )
-          assert "SETTING_TRAINER_RANDOMIZER_MODE" in read(
-              "src/ui_intro_options.c"
-          )
-          assert "GetPrototypeTrainerSpecies" in read(
-              "src/battle_main.c"
-          )
-
-          print("Patch prepared successfully")
-          for path in changed:
-              print("Modified:", path)
+          s = s[:a] + helper + sec + s[b:]
+          save(p, s)
+          print('Patched SaveBlock2, intro options and trainer party creation.')
           PY
-
           python3 patch.py
 
-      - name: Publish prototype as one atomic commit
-        shell: bash
+      - name: Publish as an atomic commit on a new branch
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-
           cat > publish.py <<'PY'
-          import os
-          import json
-          import base64
-          import urllib.request
-          import urllib.error
+          import os, json, base64, urllib.request, urllib.error
           from pathlib import Path
-
-          repository = os.environ["REPOSITORY"]
-          token = os.environ["GH_TOKEN"]
-
-          branch = "trainer-randomizer-test"
-          api_base = (
-              f"https://api.github.com/repos/{repository}"
-          )
-
-          def request(method, endpoint, payload=None):
-              data = None
-              if payload is not None:
-                  data = json.dumps(payload).encode()
-
-              req = urllib.request.Request(
-                  api_base + endpoint,
-                  data=data,
-                  method=method,
-                  headers={
-                      "Authorization": f"Bearer {token}",
-                      "Accept": "application/vnd.github+json",
-                      "Content-Type": "application/json",
-                      "X-GitHub-Api-Version": "2022-11-28",
-                  }
-              )
-
+          repo = os.environ['REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          base = f'https://api.github.com/repos/{repo}'
+          branch = 'trainer-randomizer-test'
+          def api(method, endpoint, body=None):
+              data = json.dumps(body).encode() if body is not None else None
+              req = urllib.request.Request(base + endpoint, data=data, method=method, headers={
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github+json',
+                  'Content-Type': 'application/json',
+                  'X-GitHub-Api-Version': '2022-11-28'})
               with urllib.request.urlopen(req) as response:
                   return json.load(response)
-
-          source_ref = request(
-              "GET", "/git/ref/heads/upcoming"
-          )
-
-          source_sha = source_ref["object"]["sha"]
-
           try:
-              request(
-                  "GET", f"/git/ref/heads/{branch}"
-              )
-          except urllib.error.HTTPError as error:
-              if error.code != 404:
-                  raise
+              api('GET', '/git/ref/heads/' + branch)
+          except urllib.error.HTTPError as exc:
+              if exc.code != 404: raise
           else:
-              raise RuntimeError(
-                  f"Branch {branch} already exists. "
-                  "No changes were published."
-              )
-
-          source_commit = request(
-              "GET", f"/git/commits/{source_sha}"
-          )
-
-          base_tree = source_commit["tree"]["sha"]
-
-          files = [
-              "include/global.h",
-              "src/ui_intro_options.c",
-              "src/battle_main.c",
-          ]
-
+              raise RuntimeError(f'{branch} already exists; refusing to overwrite it')
+          parent = api('GET', '/git/ref/heads/upcoming')['object']['sha']
+          tree_sha = api('GET', '/git/commits/' + parent)['tree']['sha']
           entries = []
-
-          for filename in files:
-              data = Path(
-                  "source", filename
-              ).read_bytes()
-
-              blob = request(
-                  "POST",
-                  "/git/blobs",
-                  {
-                      "content": base64.b64encode(
-                          data
-                      ).decode(),
-                      "encoding": "base64"
-                  }
-              )
-
-              entries.append({
-                  "path": filename,
-                  "mode": "100644",
-                  "type": "blob",
-                  "sha": blob["sha"]
-              })
-
-          tree = request(
-              "POST",
-              "/git/trees",
-              {
-                  "base_tree": base_tree,
-                  "tree": entries
-              }
-          )
-
-          commit = request(
-              "POST",
-              "/git/commits",
-              {
-                  "message": (
-                      "Experimental trainer randomizer"
-                  ),
-                  "tree": tree["sha"],
-                  "parents": [source_sha]
-              }
-          )
-
-          # Create the branch only after all
-          # three modified files are ready.
-          request(
-              "POST",
-              "/git/refs",
-              {
-                  "ref": f"refs/heads/{branch}",
-                  "sha": commit["sha"]
-              }
-          )
-
-          print("Created:", branch)
-          print("Commit:", commit["sha"])
+          for path in ['include/global.h', 'src/ui_intro_options.c', 'src/battle_main.c']:
+              content = base64.b64encode(Path('source', path).read_bytes()).decode()
+              blob = api('POST', '/git/blobs', {'content': content, 'encoding': 'base64'})
+              entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+          tree = api('POST', '/git/trees', {'base_tree': tree_sha, 'tree': entries})
+          commit = api('POST', '/git/commits', {'message': 'Experimental trainer randomizer', 'tree': tree['sha'], 'parents': [parent]})
+          api('POST', '/git/refs', {'ref': 'refs/heads/' + branch, 'sha': commit['sha']})
+          print('Created', branch, 'at', commit['sha'])
           PY
-
           python3 publish.py
 
-      - name: Upload modified source files
+      - name: Upload patched files for review
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Trainer-Randomizer-Prototype-Sources
+          name: trainer-randomizer-prototype-files
           path: |
             source/include/global.h
             source/src/ui_intro_options.c
