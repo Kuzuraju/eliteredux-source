@@ -2,8 +2,6 @@ name: Trainer Randomizer V2 - Test
 
 on:
   workflow_dispatch:
-  push:
-    branches: [trainer-randomizer-v2-test]
 
 permissions:
   contents: read
@@ -26,17 +24,296 @@ jobs:
         shell: bash
 
     steps:
-      - name: Check out test source
-        uses: actions/checkout@v4
-        with:
-          path: work
-          persist-credentials: false
-
-      - name: Record source commit
+      - name: Fetch pinned source and apply trainer randomizer fix
         run: |
           set -euo pipefail
-          mkdir -p report
-          git -C work rev-parse HEAD | tee report/source-commit.txt
+          mkdir -p work report
+          cd work
+          git init -q
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 --no-tags origin 35a5b95e4cada1294efeebe9c51bfa4b63fc5bd3
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = 35a5b95e4cada1294efeebe9c51bfa4b63fc5bd3
+          git rev-parse HEAD | tee ../report/source-commit.txt
+
+          cat > ../report/trainer-randomizer.patch <<'TRAINER_PATCH'
+          diff --git a/include/new_game.h b/include/new_game.h
+          index 9b96ba47..a8150bb5 100644
+          --- a/include/new_game.h
+          +++ b/include/new_game.h
+          @@ -10,6 +10,7 @@ void SetTrainerId(u32 trainerId, u8 *dst);
+           u32 GetTrainerId(u8 *trainerId);
+           void CopyTrainerId(u8 *dst, u8 *src);
+           void NewGameInitData(void);
+          +u16 GetOrInitTrainerRandomizerSeed(void);
+           void ResetMenuAndMonGlobals(void);
+           void Sav2_ClearSetDefault(void);
+           
+          diff --git a/include/pokemon.h b/include/pokemon.h
+          index 0fb63cc7..93e37ad3 100644
+          --- a/include/pokemon.h
+          +++ b/include/pokemon.h
+          @@ -433,6 +433,7 @@ u8 CalculatePlayerBattlerPartyCount(void);
+           u8 GetMonsStateToDoubles(void);
+           u8 GetMonsStateToDoubles_2(void);
+           u16 GetAbilityBySpecies(SpeciesEnum species, u8 abilityNum);
+          +bool8 TrainerRandomizerSpeciesAllowed(SpeciesEnum species);
+           u16 GetMonAbility(struct Pokemon* mon);
+           void CreateSecretBaseEnemyParty(struct SecretBase* secretBaseRecord);
+           u8 GetSecretBaseTrainerPicIndex(void);
+          diff --git a/src/battle_main.c b/src/battle_main.c
+          index 3768b301..7612c50c 100644
+          --- a/src/battle_main.c
+          +++ b/src/battle_main.c
+          @@ -48,6 +48,7 @@
+           #include "m4a.h"
+           #include "main.h"
+           #include "malloc.h"
+          +#include "new_game.h"
+           #include "mgba_printf/mgba.h"
+           #include "mgba_printf/mini_printf.h"
+           #include "palette.h"
+          @@ -1729,23 +1730,117 @@ static void sub_8038538(struct Sprite* sprite) {
+           // Deterministic per trainer, slot and difficulty; never consumes battle RNG.
+           static SpeciesEnum GetPrototypeTrainerSpecies(u16 trainerNum, u8 slot, u8 difficulty, SpeciesEnum original)
+           {
+          -    u32 seed = VarGet(VAR_RANDOMIZED_SEED);
+          +    u32 seed = GetOrInitTrainerRandomizerSeed();
+               u16 attempt;
+          -    if (!seed) return original;
+               seed ^= (u32)trainerNum * 0x9E3779B9u;
+               seed ^= (u32)(slot + 1) * 0x85EBCA6Bu;
+               seed ^= (u32)(difficulty + 1) * 0xC2B2AE35u;
+               if (!seed) seed = 1;
+               for (attempt = 0; attempt < 512; attempt++) {
+                   SpeciesEnum candidate = RandRangeDeterministic(1, REAL_SPECIES_COUNT - 1, &seed);
+          -        if (IsSpeciesRandomizerAllowed(candidate, FALSE, TRUE)) return candidate;
+          +        if (candidate != original && TrainerRandomizerSpeciesAllowed(candidate))
+          +            return candidate;
+               }
+               return original;
+           }
+           
+          -static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 firstTrainer) {
+          -    bool8 prototypeRandomized = FALSE;
+          +// Rank moves from the species' learnsets, including level-up moves at later levels.
+          +static s32 ScoreTrainerMove(u16 move, SpeciesEnum species, u16 attack, u16 spAttack,
+          +                            u32 seed, const u16 *selected, u8 count)
+          +{
+          +    const struct BattleMove *data = &gBattleMoves[move];
+          +    bool8 status = data->split == SPLIT_STATUS;
+          +    s32 score = (s32)((seed ^ ((u32)move * 0x9E3779B9u)) >> 28);
+          +
+          +    for (u8 i = 0; i < count; i++) {
+          +        const struct BattleMove *previous = &gBattleMoves[selected[i]];
+          +        if (move == selected[i])
+          +            return -10000;
+          +        if (status && previous->split == SPLIT_STATUS)
+          +            score -= 100;
+          +        if (!status && previous->split != SPLIT_STATUS && previous->type == data->type)
+          +            score -= 75;
+          +    }
+          +
+          +    if (status) {
+          +        // Lead with an attack when the species has one.
+          +        if (count == 0)
+          +            return score - 500;
+          +        switch (move) {
+          +        case MOVE_SWORDS_DANCE:
+          +            return score + (attack >= spAttack ? 125 : 20);
+          +        case MOVE_NASTY_PLOT:
+          +            return score + (spAttack >= attack ? 125 : 20);
+          +        case MOVE_RECOVER:
+          +        case MOVE_ROOST:
+          +        case MOVE_SOFT_BOILED:
+          +        case MOVE_SYNTHESIS:
+          +        case MOVE_STRENGTH_SAP:
+          +        case MOVE_STEALTH_ROCK:
+          +        case MOVE_SPIKES:
+          +        case MOVE_WILL_O_WISP:
+          +        case MOVE_THUNDER_WAVE:
+          +        case MOVE_LEECH_SEED:
+          +            return score + 115;
+          +        default:
+          +            return score + 10;
+          +        }
+          +    }
+          +
+          +    u16 accuracy = data->accuracy == 0 ? 100 : data->accuracy;
+          +    u16 offensiveStat = data->split == SPLIT_PHYSICAL ? attack : spAttack;
+          +    u16 highestStat = attack > spAttack ? attack : spAttack;
+          +    u16 power = data->power > 140 ? 140 : data->power;
+           
+          +    score += 40 + (power * accuracy / 100) * offensiveStat / (highestStat ? highestStat : 1);
+          +    if (data->type == gBaseStats[species].type1 || data->type == gBaseStats[species].type2)
+          +        score += 40;
+          +    if (data->twoTurnMove || data->everyOtherTurn)
+          +        score -= 45;
+          +    return score;
+          +}
+          +
+          +static void SetCompetitiveTrainerMoves(struct Pokemon *mon, SpeciesEnum species, u16 trainerNum, u8 partySlot)
+          +{
+          +    _Static_assert(TUTOR_COUNT <= 256, "Tutor IDs must fit CanLearnTutorMove");
+          +    u16 candidates[MAX_LEVEL_UP_MOVES + TUTOR_COUNT];
+          +    u16 selected[MAX_MON_MOVES] = {0};
+          +    u16 candidateCount = GetLevelUpMovesBySpecies(species, candidates);
+          +    u16 attack = GetMonData(mon, MON_DATA_ATK, NULL);
+          +    u16 spAttack = GetMonData(mon, MON_DATA_SPATK, NULL);
+          +    u32 seed = ((u32)VarGet(VAR_RANDOMIZED_SEED) << 16)
+          +               ^ ((u32)trainerNum * 0x9E3779B9u) ^ ((u32)(partySlot + 1) * 0x85EBCA6Bu);
+          +
+          +    for (u16 tutor = 0; tutor < TUTOR_COUNT; tutor++) {
+          +        if (CanLearnTutorMove(species, tutor))
+          +            candidates[candidateCount++] = GetTutorMove(tutor);
+          +    }
+          +
+          +    for (u8 slot = 0; slot < MAX_MON_MOVES; slot++) {
+          +        s32 bestScore = -10000;
+          +        for (u16 i = 0; i < candidateCount; i++) {
+          +            u16 move = candidates[i];
+          +            if (move == MOVE_NONE || gBattleMoves[move].effect == EFFECT_PLACEHOLDER)
+          +                continue;
+          +            s32 score = ScoreTrainerMove(move, species, attack, spAttack, seed, selected, slot);
+          +            if (score > bestScore) {
+          +                bestScore = score;
+          +                selected[slot] = move;
+          +            }
+          +        }
+          +        if (selected[slot] == MOVE_NONE)
+          +            break;
+          +    }
+          +
+          +    for (u8 i = 0; i < MAX_MON_MOVES; i++) {
+          +        u16 move = selected[i];
+          +        u8 pp = move == MOVE_NONE ? 0 : CalculatePPWithBonus(move, 0, i);
+          +        SetMonData(mon, MON_DATA_MOVE1 + i, &move);
+          +        SetMonData(mon, MON_DATA_PP1 + i, &pp);
+          +    }
+          +}
+          +
+          +static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 firstTrainer) {
+               u32 nameHash = 0;
+               u32 personalityValue;
+               s32 i, j = 0;
+          @@ -1851,18 +1946,17 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+                       if (FlagGet(FLAG_DEBUG_GODMODE)) level = 1;
+           #endif
+           
+          -            prototypeRandomized = FALSE;
+          -    if (trainerNum == TRAINER_OLDPLAYER) {
+          -        species = Random() % 500;
+          -        CreateMon(&party[i], species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
+          -    } else {
+          -        species = partyData[i].species;
+          -        if (gSaveBlock2Ptr->trainerRandomizedMode) {
+          -            species = GetPrototypeTrainerSpecies(trainerNum, i, gSaveBlock2Ptr->gameDifficulty, species);
+          -            prototypeRandomized = (species != partyData[i].species);
+          -        }
+          -        CreateMon(&party[i], species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
+          -    }
+          +            bool8 prototypeRandomized = FALSE;
+          +            if (trainerNum == TRAINER_OLDPLAYER) {
+          +                species = Random() % 500;
+          +            } else {
+          +                species = partyData[i].species;
+          +                if (gSaveBlock2Ptr->trainerRandomizedMode) {
+          +                    species = GetPrototypeTrainerSpecies(trainerNum, i, difficultySetting, species);
+          +                    prototypeRandomized = (species != partyData[i].species);
+          +                }
+          +            }
+          +            CreateMon(&party[i], species, level, 31, TRUE, personalityValue, OT_ID_RANDOM_NO_SHINY, 0);
+           
+                       // Sets Pokemon Nature
+                       SetMonData(&party[i], MON_DATA_NATURE, &partyData[i].nature);
+          @@ -1909,7 +2003,9 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+           
+                       CalculateEnemyTrainerMonStats(&party[i]);
+           
+          -            if (trainerNum == TRAINER_OLDPLAYER || prototypeRandomized) {
+          +            if (prototypeRandomized) {
+          +                SetCompetitiveTrainerMoves(&party[i], species, trainerNum, i);
+          +            } else if (trainerNum == TRAINER_OLDPLAYER) {
+                           for (j = 0; j < MAX_MON_MOVES; j++) {
+                               move = selectMoves(species, j, GetMonData(&party[i], MON_DATA_ATK, NULL), GetMonData(&party[i], MON_DATA_SPATK, NULL));
+                               SetMonData(&party[i], MON_DATA_MOVE1 + j, &move);
+          diff --git a/src/new_game.c b/src/new_game.c
+          index 8238f55c..0e69caf2 100644
+          --- a/src/new_game.c
+          +++ b/src/new_game.c
+          @@ -74,7 +74,7 @@ void SetTrainerId(u32 trainerId, u8 *dst)
+           
+           u32 GetTrainerId(u8 *trainerId)
+           {
+          -    return (trainerId[3] << 24) | (trainerId[2] << 16) | (trainerId[1] << 8) | (trainerId[0]);
+          +    return ((u32)trainerId[3] << 24) | (trainerId[2] << 16) | (trainerId[1] << 8) | (trainerId[0]);
+           }
+           
+           void CopyTrainerId(u8 *dst, u8 *src)
+          @@ -163,6 +163,19 @@ void ResetMenuAndMonGlobals(void)
+               ResetPokeblockScrollPositions();
+           }
+           
+          +u16 GetOrInitTrainerRandomizerSeed(void)
+          +{
+          +    u16 seed = VarGet(VAR_RANDOMIZED_SEED);
+          +    if (seed == 0) {
+          +        u32 playerId = GetTrainerId(gSaveBlock2Ptr->playerTrainerId);
+          +        seed = (u16)(playerId ^ (playerId >> 16));
+          +        if (seed == 0)
+          +            seed = 1;
+          +        VarSet(VAR_RANDOMIZED_SEED, seed);
+          +    }
+          +    return seed;
+          +}
+          +
+           void NewGameInitData(void)
+           {
+               if (gSaveFileStatus == SAVE_STATUS_EMPTY || gSaveFileStatus == SAVE_STATUS_CORRUPT)
+          @@ -180,6 +193,8 @@ void NewGameInitData(void)
+               PlayTimeCounter_Reset();
+               ClearPokedexFlags();
+               InitEventData();
+          +    if (gSaveBlock2Ptr->trainerRandomizedMode)
+          +        GetOrInitTrainerRandomizerSeed();
+               ClearTVShowData();
+               ResetGabbyAndTy();
+               ClearSecretBases();
+          diff --git a/src/pokemon.c b/src/pokemon.c
+          index 70af2fb1..853921fb 100644
+          --- a/src/pokemon.c
+          +++ b/src/pokemon.c
+          @@ -5407,6 +5407,11 @@ void getGenRange(u8 gen, u16* min, u16* max) {
+           
+           #include "generated/data/pokemon/randomizer_banned.h"
+           
+          +bool8 TrainerRandomizerSpeciesAllowed(SpeciesEnum species)
+          +{
+          +    return IsSpeciesRandomizerAllowed(species, FALSE, TRUE);
+          +}
+          +
+           u16 GetRandomPokemonFromSpecies(u16 basespecies) {
+               SpeciesEnum species = basespecies;
+               u32 rndSeed = VarGet(VAR_RANDOMIZED_SEED);
+          diff --git a/src/ui_intro_options.c b/src/ui_intro_options.c
+          index e6b58feb..e8122bc7 100644
+          --- a/src/ui_intro_options.c
+          +++ b/src/ui_intro_options.c
+          @@ -183,10 +183,6 @@ static void SaveOptionsData()
+                   gSaveBlock2Ptr->encounterRandomizedLegendaryMode = TRUE;
+               }
+               gSaveBlock2Ptr->trainerRandomizedMode = sMenuDataPtr->temporal_settings[SETTING_TRAINER_RANDOMIZER_MODE];
+          -    if (gSaveBlock2Ptr->trainerRandomizedMode && VarGet(VAR_RANDOMIZED_SEED) == 0) {
+          -        u16 trainerSeed = Random();
+          -        VarSet(VAR_RANDOMIZED_SEED, trainerSeed ? trainerSeed : 1);
+          -    }
+               gSaveBlock2Ptr->innaterandomizedMode = sMenuDataPtr->temporal_settings[SETTING_RANDOMIZER_INNATE_MODE];
+               gSaveBlock2Ptr->abilityRandomizedMode   = sMenuDataPtr->temporal_settings[SETTING_RANDOMIZER_ABILITY_MODE];
+               gSaveBlock2Ptr->individualColors        = sMenuDataPtr->temporal_settings[SETTING_INDIVIDUAL_COLORS];
+          TRAINER_PATCH
+          git apply --check ../report/trainer-randomizer.patch
+          git apply ../report/trainer-randomizer.patch
+          git diff --check
 
       - name: Verify ROM and prototype
         run: |
@@ -49,7 +326,8 @@ jobs:
           test -f src/ui_intro_options.c
           test -f include/global.h
 
-          grep -q GetPrototypeTrainerSpecies src/battle_main.c
+          grep -q GetOrInitTrainerRandomizerSeed src/new_game.c
+          grep -q SetCompetitiveTrainerMoves src/battle_main.c
           grep -q trainerRandomizedMode include/global.h
           grep -q SETTING_TRAINER_RANDOMIZER_MODE src/ui_intro_options.c
 
