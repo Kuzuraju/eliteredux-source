@@ -17,11 +17,10 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - name: Fetch repositories without submodules
+      - name: Fetch source repositories
         shell: bash
         run: |
           set -euo pipefail
-
           mkdir -p work report
           cd work
 
@@ -58,59 +57,37 @@ jobs:
           git merge-base origin/upcoming upstream/upcoming \
             > ../report/merge-base.txt
 
-      - name: Merge upstream and preserve Manual.yml
+      - name: Squash upstream changes safely
         id: merge
         shell: bash
         run: |
           set -euo pipefail
           cd work
 
-          MANUAL=".github/workflows/Manual.yml"
+          echo "Starting squash merge..."
 
-          echo "Starting upstream merge..."
-
-          if git merge --no-commit --no-ff \
-            upstream/upcoming \
+          if git merge --squash upstream/upcoming \
             > ../report/merge-output.txt 2>&1; then
             MERGE_STATUS=0
           else
             MERGE_STATUS=$?
           fi
 
-          echo "Initial merge exit code: $MERGE_STATUS" \
+          echo "$MERGE_STATUS" \
             > ../report/merge-exit-code.txt
 
           git diff --name-only --diff-filter=U \
             > ../report/initial-conflicts.txt
 
-          if [ ! -f .git/MERGE_HEAD ]; then
-            echo "No active merge. Nothing will be pushed." \
-              | tee ../report/result.txt
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          echo "Restoring all local GitHub workflows..."
 
-          if grep -Fxq "$MANUAL" \
-            ../report/initial-conflicts.txt; then
-
-            echo "Keeping local Manual.yml"
-
-            git checkout --ours -- "$MANUAL"
-            git add -- "$MANUAL"
-
-            echo "Manual.yml resolved using local version." \
-              > ../report/manual-resolution.txt
-          else
-            echo "Manual.yml had no direct conflict." \
-              > ../report/manual-resolution.txt
-          fi
-
-          # Preserve local Manual.yml even if Git
-          # automatically merged changes into it.
+          # Keep every local workflow exactly as it was.
+          # This also removes new upstream workflows.
           git restore \
             --source=origin/upcoming \
-            --staged --worktree \
-            -- "$MANUAL"
+            --staged \
+            --worktree \
+            -- .github/workflows/
 
           git diff --name-only --diff-filter=U \
             > ../report/remaining-conflicts.txt
@@ -119,27 +96,29 @@ jobs:
             > ../report/status-after-resolution.txt
 
           if [ -s ../report/remaining-conflicts.txt ]; then
-            echo "Other conflicts remain. No push." \
+            echo "Non-workflow conflicts remain. No push." \
               | tee ../report/result.txt
             echo "ready=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Verify Manual.yml is identical to local.
-          OLD_MANUAL=$(git rev-parse \
-            "origin/upcoming:$MANUAL")
+          echo "Verifying local workflows..."
 
-          NEW_MANUAL=$(git rev-parse ":$MANUAL")
+          OLD_WORKFLOWS=$(git rev-parse \
+            origin/upcoming:.github/workflows)
 
-          if [ "$OLD_MANUAL" != "$NEW_MANUAL" ]; then
-            echo "Manual.yml verification failed." \
+          NEW_WORKFLOWS=$(git rev-parse \
+            :.github/workflows)
+
+          if [ "$OLD_WORKFLOWS" != "$NEW_WORKFLOWS" ]; then
+            echo "Workflow preservation failed. No push." \
               | tee ../report/result.txt
             echo "ready=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "Manual.yml preserved byte-for-byte." \
-            >> ../report/manual-resolution.txt
+          echo "All local workflows preserved." \
+            > ../report/workflow-verification.txt
 
           echo "Checking customized graphics..."
 
@@ -175,15 +154,11 @@ jobs:
                   text=True
               )
 
-              if (
-                  old.returncode != new.returncode
-                  or (
-                      old.returncode == 0
-                      and old.stdout.strip()
-                      != new.stdout.strip()
-                  )
-              ):
+              if old.returncode != new.returncode:
                   problems.append(path)
+              elif old.returncode == 0:
+                  if old.stdout.strip() != new.stdout.strip():
+                      problems.append(path)
 
           Path(
               '../report/graphics-not-preserved.txt'
@@ -200,15 +175,25 @@ jobs:
             exit 0
           fi
 
+          echo "Customized graphics preserved." \
+            > ../report/graphics-verification.txt
+
           git diff --cached --name-status \
             > ../report/staged-changes.txt
 
-          echo "Merge ready. Manual.yml and customized graphics preserved." \
+          if git diff --cached --quiet; then
+            echo "No changes to publish." \
+              | tee ../report/result.txt
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Squash merge ready for publication." \
             | tee ../report/result.txt
 
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
-      - name: Publish isolated update branch
+      - name: Publish isolated test branch
         if: steps.merge.outputs.ready == 'true'
         shell: bash
         run: |
@@ -216,7 +201,7 @@ jobs:
           cd work
 
           git commit -m \
-            "Merge official upstream while preserving local Manual.yml and graphics"
+            "Update Elite Redux source from official upstream"
 
           AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
 
@@ -230,7 +215,7 @@ jobs:
           echo "https://github.com/${GITHUB_REPOSITORY}/tree/${TARGET_BRANCH}" \
             > ../report/branch-url.txt
 
-      - name: Upload diagnostic report
+      - name: Upload merge report
         if: always()
         uses: actions/upload-artifact@v4
         with:
