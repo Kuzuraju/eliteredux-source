@@ -62,7 +62,7 @@ jobs:
            void CreateSecretBaseEnemyParty(struct SecretBase* secretBaseRecord);
            u8 GetSecretBaseTrainerPicIndex(void);
           diff --git a/src/battle_main.c b/src/battle_main.c
-          index 3768b301..eaeb532c 100644
+          index 3768b301..286bcbb6 100644
           --- a/src/battle_main.c
           +++ b/src/battle_main.c
           @@ -22,6 +22,7 @@
@@ -81,7 +81,7 @@ jobs:
            #include "mgba_printf/mgba.h"
            #include "mgba_printf/mini_printf.h"
            #include "palette.h"
-          @@ -1726,26 +1728,447 @@ static void sub_8038538(struct Sprite* sprite) {
+          @@ -1726,26 +1728,449 @@ static void sub_8038538(struct Sprite* sprite) {
                }
            }
            
@@ -94,30 +94,27 @@ jobs:
           +    TRAINER_STAGE_MIDDLE = 3,
           +};
           +
-          +static const u8 *GetTrainerEvolutionStages(void)
-           {
-          -    u32 seed = VarGet(VAR_RANDOMIZED_SEED);
-          -    u16 attempt;
-          -    if (!seed) return original;
-          +    static EWRAM_DATA u8 stages[REAL_SPECIES_COUNT] = {0};
-          +    static EWRAM_DATA bool8 initialized = FALSE;
-          +    if (!initialized) {
-          +        for (u16 species = 1; species < REAL_SPECIES_COUNT; species++) {
-          +            const struct Evolution *evolutions = gEvolutionTable[species];
-          +            if (evolutions == NULL)
+          +static u8 *AllocTrainerEvolutionStages(void)
+          +{
+          +    // Two bits per species, allocated only while constructing the trainer party.
+          +    u8 *stages = AllocZero((REAL_SPECIES_COUNT + 3) / 4);
+          +    if (stages == NULL)
+          +        return NULL;
+          +
+          +    for (u16 species = 1; species < REAL_SPECIES_COUNT; species++) {
+          +        const struct Evolution *evolutions = gEvolutionTable[species];
+          +        if (evolutions == NULL)
+          +            continue;
+          +
+          +        for (u16 i = 0; evolutions[i].method != 0; i++) {
+          +            SpeciesEnum target = evolutions[i].targetSpecies;
+          +            if (evolutions[i].method == EVO_DEEVOLUTION || target <= SPECIES_NONE
+          +                || target >= REAL_SPECIES_COUNT || target == species)
           +                continue;
           +
-          +            for (u16 i = 0; evolutions[i].method != 0; i++) {
-          +                SpeciesEnum target = evolutions[i].targetSpecies;
-          +                if (evolutions[i].method == EVO_DEEVOLUTION || target <= SPECIES_NONE
-          +                    || target >= REAL_SPECIES_COUNT || target == species)
-          +                    continue;
-          +
-          +                stages[species] |= TRAINER_STAGE_FIRST;
-          +                stages[target] |= TRAINER_STAGE_FINAL;
-          +            }
+          +            stages[species / 4] |= TRAINER_STAGE_FIRST << (2 * (species % 4));
+          +            stages[target / 4] |= TRAINER_STAGE_FINAL << (2 * (target % 4));
           +        }
-          +        initialized = TRUE;
           +    }
           +    return stages;
           +}
@@ -130,9 +127,11 @@ jobs:
           +}
           +
           +// Rank a deterministic sample so evolution stage is a preference, with power as a second signal.
-          +static SpeciesEnum GetPrototypeTrainerSpecies(u16 trainerNum, u8 slot, u8 difficulty, SpeciesEnum original, u8 level)
-          +{
-          +    const u8 *stages = GetTrainerEvolutionStages();
+          +static SpeciesEnum GetPrototypeTrainerSpecies(u16 trainerNum, u8 slot, u8 difficulty, SpeciesEnum original, u8 level, const u8 *stages)
+           {
+          -    u32 seed = VarGet(VAR_RANDOMIZED_SEED);
+          -    u16 attempt;
+          -    if (!seed) return original;
           +    u8 preferredStage = level < 18 ? TRAINER_STAGE_FIRST
           +                      : level < 36 ? TRAINER_STAGE_MIDDLE : TRAINER_STAGE_FINAL;
           +    s32 typicalPower = level < 18 ? 315 : level < 36 ? 410 : 510;
@@ -163,8 +162,11 @@ jobs:
           +        s32 score = statDifference < 0 ? -statDifference : statDifference;
           +        if (statDifference > 65)
           +            score += statDifference - 65;
-          +        if (stages[candidate] != TRAINER_STAGE_UNEVOLVING && stages[candidate] != preferredStage)
-          +            score += 45;
+          +        if (stages != NULL) {
+          +            u8 stage = (stages[candidate / 4] >> (2 * (candidate % 4))) & 3;
+          +            if (stage != TRAINER_STAGE_UNEVOLVING && stage != preferredStage)
+          +                score += 45;
+          +        }
           +
           +        // Leave room for variety among candidates of roughly comparable power.
           +        score += RandRangeDeterministic(0, 60, &seed);
@@ -539,7 +541,18 @@ jobs:
                u32 nameHash = 0;
                u32 personalityValue;
                s32 i, j = 0;
-          @@ -1851,18 +2274,17 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+          @@ -1809,6 +2234,10 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+                   if (FlagGet(FLAG_DEBUG_GODMODE)) monsCount = 1;
+           #endif
+           
+          +        u8 *evolutionStages = NULL;
+          +        if (gSaveBlock2Ptr->trainerRandomizedMode && trainerNum != TRAINER_OLDPLAYER && monsCount != 0)
+          +            evolutionStages = AllocTrainerEvolutionStages();
+          +
+                   for (i = 0; i < monsCount; i++) {
+                       if (isDoubleBattle == TRUE)
+                           personalityValue = 0x80;
+          @@ -1851,18 +2280,17 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
                        if (FlagGet(FLAG_DEBUG_GODMODE)) level = 1;
            #endif
            
@@ -561,7 +574,7 @@ jobs:
           +            } else {
           +                species = partyData[i].species;
           +                if (gSaveBlock2Ptr->trainerRandomizedMode) {
-          +                    species = GetPrototypeTrainerSpecies(trainerNum, i, difficultySetting, species, level);
+          +                    species = GetPrototypeTrainerSpecies(trainerNum, i, difficultySetting, species, level, evolutionStages);
           +                    prototypeRandomized = (species != partyData[i].species);
           +                }
           +            }
@@ -569,7 +582,7 @@ jobs:
            
                        // Sets Pokemon Nature
                        SetMonData(&party[i], MON_DATA_NATURE, &partyData[i].nature);
-          @@ -1909,7 +2331,11 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+          @@ -1909,7 +2337,11 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
            
                        CalculateEnemyTrainerMonStats(&party[i]);
            
@@ -582,6 +595,16 @@ jobs:
                            for (j = 0; j < MAX_MON_MOVES; j++) {
                                move = selectMoves(species, j, GetMonData(&party[i], MON_DATA_ATK, NULL), GetMonData(&party[i], MON_DATA_SPATK, NULL));
                                SetMonData(&party[i], MON_DATA_MOVE1 + j, &move);
+          @@ -1935,6 +2367,9 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+                       SetMonData(&party[i], MON_DATA_POKEBALL, &gTrainerBallTable[j].Ball);
+                   }
+           
+          +        if (evolutionStages != NULL)
+          +            Free(evolutionStages);
+          +
+                   if (isDoubleBattle)
+                       gBattleTypeFlags |= BATTLE_TYPE_DOUBLE;
+                   else
           diff --git a/src/new_game.c b/src/new_game.c
           index 8238f55c..0e69caf2 100644
           --- a/src/new_game.c
