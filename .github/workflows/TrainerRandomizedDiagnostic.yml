@@ -9,13 +9,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Elite Redux
-        uses: actions/checkout@v4
-        with:
-          ref: upcoming
-          fetch-depth: 1
-          submodules: false
-          lfs: false
+ - name: Checkout Elite Redux
+  uses: actions/checkout@v4
+  with:
+    ref: upcoming
+    fetch-depth: 1
+    submodules: false
+    lfs: false
+    persist-credentials: false
 
       - name: Investigate trainer randomization
         shell: bash
