@@ -13,9 +13,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: upcoming
+          fetch-depth: 1
           submodules: false
+          lfs: false
 
-      - name: Extract relevant source code
+      - name: Investigate trainer randomization
+        shell: bash
         run: |
           mkdir -p trainer-diagnostic
 
@@ -25,53 +28,65 @@ jobs:
 
           output = Path("trainer-diagnostic/report.txt")
 
-          targets = {
+          searches = {
               "src/pokemon.c": [
-                  "selectMoves",
-                  "GetRandomPokemonFromSpecies",
-                  "IsSpeciesRandomizerAllowed",
-                  "GetRandomSpeciesFromPool",
-              ],
-              "src/ui_intro_options.c": [
-                  "SETTING_RANDOMIZER_MODE",
-                  "SETTING_RANDOMIZER_TYPE_MODE",
-              ],
-              "include/global.h": [
-                  "encounterRandomizedMode",
-                  "struct SaveBlock2",
-              ],
-              "include/constants/vars.h": [
-                  "VAR_RANDOMIZED_SEED",
+                  (r"\bselectMoves\s*\(", 110, 15),
+                  (r"\bIsSpeciesRandomizerAllowed\s*\(", 100, 15),
+                  (r"\bGetRandomPokemonFromSpecies\s*\(", 75, 10),
+                  (r"\bCalculateEnemyTrainerMonStats\s*\(", 100, 15),
+                  (r"\bMON_DATA_ABILITY_NUM\b", 12, 8),
+                  (r"\bINNATE\b", 8, 5),
               ],
               "src/battle_main.c": [
-                  "CreateNPCTrainerParty",
+                  (r"\bCreateNPCTrainerParty\s*\(", 210, 5),
+                  (r"\bMON_DATA_ABILITY_NUM\b", 15, 10),
+                  (r"\bCalculateEnemyTrainerMonStats\s*\(", 20, 10),
+              ],
+              "src/ui_intro_options.c": [
+                  (r"\bSETTING_RANDOMIZER_MODE\b", 50, 10),
+                  (r"\bSaveOptionsData\s*\(", 55, 5),
+                  (r"\bLoadOptionsData\s*\(", 55, 5),
+                  (r"\bsOption", 15, 5),
+              ],
+              "include/global.h": [
+                  (r"\bstruct SaveBlock2\b", 100, 5),
+                  (r"\bfiller\s*:", 12, 10),
+              ],
+              "src/random.c": [
+                  (r"\bRandRangeDeterministic\s*\(", 45, 10),
               ],
           }
 
-          with output.open("w") as report:
-              for filename, terms in targets.items():
-                  path = Path(filename)
+          with output.open("w", encoding="utf-8") as report:
+              report.write(
+                  "TRAINER RANDOMIZER DIAGNOSTIC\n"
+                  "================================\n"
+              )
 
+              for filename, patterns in searches.items():
                   report.write(f"\n=== {filename} ===\n")
+                  path = Path(filename)
 
                   if not path.exists():
                       report.write("FILE NOT FOUND\n")
                       continue
 
                   lines = path.read_text(
+                      encoding="utf-8",
                       errors="replace"
                   ).splitlines()
 
-                  matches = [
-                      i for i, line in enumerate(lines)
-                      if any(term in line for term in terms)
-                  ]
-
                   intervals = []
-                  for i in matches:
-                      start = max(0, i - 12)
-                      end = min(len(lines), i + 45)
-                      intervals.append((start, end))
+
+                  for pattern, after, before in patterns:
+                      regex = re.compile(pattern)
+
+                      for i, line in enumerate(lines):
+                          if regex.search(line):
+                              intervals.append((
+                                  max(0, i - before),
+                                  min(len(lines), i + after + 1)
+                              ))
 
                   intervals.sort()
                   merged = []
@@ -87,60 +102,97 @@ jobs:
 
                   for start, end in merged:
                       report.write(
-                          f"\n--- Lines {start+1}-{end} ---\n"
+                          f"\n--- Lines {start + 1}-{end} ---\n"
                       )
 
                       for i in range(start, end):
                           report.write(
-                              f"{i+1}: {lines[i]}\n"
+                              f"{i + 1}: {lines[i]}\n"
                           )
 
-          print(f"Report created: {output}")
+          print(f"Created {output}")
           PY
 
-      - name: Find trainer classifications
+      - name: Find trainer abilities and innates
+        shell: bash
         run: |
           {
             echo
-            echo "=== TRAINER CLASSES AND IDENTIFIERS ==="
+            echo "=== TRAINER ABILITY AND INNATE REFERENCES ==="
 
             grep -RniE \
-              'TRAINER_CLASS_LEADER|TRAINER_CLASS_ELITE_FOUR|TRAINER_CLASS_CHAMPION|TRAINER_ROXANNE|TRAINER_BRAWLY|TRAINER_WATTSON|TRAINER_FLANNERY|TRAINER_NORMAN|TRAINER_WINONA|TRAINER_TATE|TRAINER_LIZA|TRAINER_WALLACE' \
-              include src \
+              'MON_DATA_ABILITY_NUM|MON_DATA_INNATE|RandomizeInnate|RandomizeAbility|abilityNum|innates' \
+              src include \
+              --include='*.c' \
+              --include='*.h' \
+              2>/dev/null | head -300 || true
+
+            echo
+            echo "=== MOVE SELECTION REFERENCES ==="
+
+            grep -RniE \
+              'selectMoves\(|GiveMonInitialMoveset|GiveMonMoves|GetLevelUp' \
+              src include \
+              --include='*.c' \
+              --include='*.h' \
+              2>/dev/null | head -180 || true
+
+          } >> trainer-diagnostic/report.txt
+
+      - name: Find gym leaders and Elite Four
+        shell: bash
+        run: |
+          {
+            echo
+            echo "=== BOSS TRAINER IDENTIFIERS ==="
+
+            grep -RniE \
+              'TRAINER_ROXANNE|TRAINER_BRAWLY|TRAINER_WATTSON|TRAINER_FLANNERY|TRAINER_NORMAN|TRAINER_WINONA|TRAINER_TATE_AND_LIZA|TRAINER_WALLACE|TRAINER_SIDNEY|TRAINER_PHOEBE|TRAINER_GLACIA|TRAINER_DRAKE|TRAINER_STEVEN' \
+              include/constants src/battle_setup.c \
               --include='*.h' \
               --include='*.c' \
               2>/dev/null | head -250 || true
 
             echo
-            echo "=== TRAINER DATA FILES ==="
+            echo "=== TRAINER DATA LOCATIONS ==="
 
-            find . \
+            find src include \
               -type f \
-              \( -iname '*trainer*' \
-              -o -iname '*trainer_class*' \) \
-              -not -path './.git/*' \
+              \( -iname '*trainer*' -o -iname '*randomizer*' \) \
               | sort | head -120
 
           } >> trainer-diagnostic/report.txt
 
-      - name: Find save structure and options
+      - name: Check save and seed usage
+        shell: bash
         run: |
           {
             echo
-            echo "=== SAVE AND OPTION REFERENCES ==="
+            echo "=== RANDOMIZER SEED REFERENCES ==="
 
             grep -RniE \
-              'struct SaveBlock2|sizeof\(struct SaveBlock2\)|SETTING_RANDOMIZER_MODE|VAR_RANDOMIZED_SEED|RandRangeDeterministic' \
-              include src \
+              'VAR_RANDOMIZED_SEED|RandRangeDeterministic|ISO_RANDOMIZE1' \
+              src include \
               --include='*.c' \
               --include='*.h' \
-              2>/dev/null | head -250 || true
+              2>/dev/null | head -200 || true
+
+            echo
+            echo "=== SAVE FILLER REFERENCES ==="
+
+            grep -RniE \
+              'bossRushMode|->filler|\.filler|sizeof\(struct SaveBlock2\)' \
+              src include \
+              --include='*.c' \
+              --include='*.h' \
+              2>/dev/null | head -160 || true
 
           } >> trainer-diagnostic/report.txt
 
-      - name: Upload report
+      - name: Upload diagnostic report
         uses: actions/upload-artifact@v4
         with:
-          name: Trainer-Randomizer-Source-Report
+          name: Trainer-Randomizer-Implementation-Report
           path: trainer-diagnostic/report.txt
           if-no-files-found: error
+          retention-days: 7
