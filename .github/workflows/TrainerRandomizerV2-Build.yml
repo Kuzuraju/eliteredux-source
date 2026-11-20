@@ -313,6 +313,167 @@ jobs:
             src/ui_intro_options.c \
             > ../report/random-header.patch
 
+      - name: Build legal competitive trainer movesets
+        run: |
+          set -euo pipefail
+          cd work
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          p = Path('src/battle_main.c')
+          s = p.read_text()
+          anchor = 'static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 firstTrainer) {'
+          if s.count(anchor) != 1:
+              raise SystemExit('Expected CreateNPCTrainerParty anchor not found exactly once')
+          if '#include "tmhm_struct.h"' not in s:
+              s = s.replace('#include "pokemon.h"', '#include "pokemon.h"\n#include "tmhm_struct.h"', 1)
+          helper = r'''// V2.1 experimental: choose legal moves without consuming battle RNG.
+          // Candidate sources: all level-up moves, egg moves and compatible tutors.
+          static u32 TrainerMoveHash(u32 seed)
+          {
+              seed ^= seed >> 16;
+              seed *= 0x7feb352du;
+              seed ^= seed >> 15;
+              seed *= 0x846ca68bu;
+              return seed ^ (seed >> 16);
+          }
+
+          static bool8 TrainerMoveAlreadyChosen(u16 move, const u16 chosen[MAX_MON_MOVES], u8 count)
+          {
+              u8 k;
+              for (k = 0; k < count; k++)
+                  if (chosen[k] == move) return TRUE;
+              return FALSE;
+          }
+
+          static s32 TrainerMoveScore(u16 move, SpeciesEnum species, u16 atk, u16 spAtk, u32 seed,
+                                      const u16 chosen[MAX_MON_MOVES], u8 count)
+          {
+              s32 score;
+              u8 k;
+              u8 type;
+              u16 power;
+              if (move == MOVE_NONE) return -100000;
+              if (gBattleMoves[move].effect == EFFECT_PLACEHOLDER) return -100000;
+              if (TrainerMoveAlreadyChosen(move, chosen, count)) return -100000;
+              power = gBattleMoves[move].power;
+              type = gBattleMoves[move].type;
+              score = (s32)(TrainerMoveHash(seed ^ (u32)move * 0x9e3779b9u) % 24);
+              if (power != 0) {
+                  score += 60 + (power > 140 ? 140 : power);
+                  if (type == gBaseStats[species].type1 || type == gBaseStats[species].type2)
+                      score += 48;
+                  // Discourage repetitive offensive typing, not all duplicate roles.
+                  for (k = 0; k < count; k++) {
+                      if (gBattleMoves[chosen[k]].power != 0 && gBattleMoves[chosen[k]].type == type)
+                          score -= 85;
+                  }
+                  // Reward naturally stronger attackers without assuming all moves are physical.
+                  score += (atk > spAtk ? atk - spAtk : spAtk - atk) / 16;
+              } else {
+                  // Status moves are useful, but four random status moves usually are not.
+                  u8 statusCount = 0;
+                  score += 105;
+                  for (k = 0; k < count; k++)
+                      if (gBattleMoves[chosen[k]].power == 0) statusCount++;
+                  if (statusCount >= 1) score -= 48;
+                  if (statusCount >= 2) score -= 110;
+                  // Explicitly reward common strategic utility; legal availability is still checked.
+                  switch (move) {
+                  case MOVE_SWORDS_DANCE:
+                      score += atk >= spAtk ? 85 : -45;
+                      break;
+                  case MOVE_NASTY_PLOT:
+                      score += spAtk >= atk ? 85 : -45;
+                      break;
+                  case MOVE_RECOVER:
+                  case MOVE_ROOST:
+                  case MOVE_SOFT_BOILED:
+                  case MOVE_MOONLIGHT:
+                  case MOVE_MORNING_SUN:
+                  case MOVE_SYNTHESIS:
+                  case MOVE_STEALTH_ROCK:
+                  case MOVE_SPIKES:
+                  case MOVE_TOXIC_SPIKES:
+                  case MOVE_WILL_O_WISP:
+                  case MOVE_THUNDER_WAVE:
+                  case MOVE_TAUNT:
+                  case MOVE_LEECH_SEED:
+                  case MOVE_STRENGTH_SAP:
+                      score += 65;
+                      break;
+                  default:
+                      break;
+                  }
+              }
+              return score;
+          }
+
+          static void SetCompetitiveTrainerMoves(struct Pokemon *mon, SpeciesEnum species, u16 trainerNum, u8 slot)
+          {
+              u16 levelMoves[MAX_LEVEL_UP_MOVES];
+              u16 eggMoves[EGG_MOVES_ARRAY_COUNT];
+              u16 selected[MAX_MON_MOVES] = {MOVE_NONE, MOVE_NONE, MOVE_NONE, MOVE_NONE};
+              u8 levelCount = GetLevelUpMovesBySpecies(species, levelMoves);
+              u8 eggCount = GetEggMoveTutorMoves(mon, eggMoves);
+              u8 chosenCount = 0;
+              u8 round;
+              u16 t;
+              u16 atk = GetMonData(mon, MON_DATA_ATK, NULL);
+              u16 spAtk = GetMonData(mon, MON_DATA_SPATK, NULL);
+              u32 seed = (u32)VarGet(VAR_RANDOMIZED_SEED) ^ ((u32)trainerNum * 0x9e3779b9u)
+                         ^ ((u32)(slot + 1) * 0x85ebca6bu) ^ ((u32)species * 0xc2b2ae35u);
+              for (round = 0; round < MAX_MON_MOVES; round++) {
+                  u16 bestMove = MOVE_NONE;
+                  s32 bestScore = -100000;
+                  for (t = 0; t < levelCount; t++) {
+                      s32 score = TrainerMoveScore(levelMoves[t], species, atk, spAtk, seed + round,
+                                                   selected, chosenCount);
+                      if (score > bestScore) { bestScore = score; bestMove = levelMoves[t]; }
+                  }
+                  for (t = 0; t < eggCount; t++) {
+                      s32 score = TrainerMoveScore(eggMoves[t], species, atk, spAtk, seed + round,
+                                                   selected, chosenCount);
+                      if (score > bestScore) { bestScore = score; bestMove = eggMoves[t]; }
+                  }
+                  for (t = 0; t < TUTOR_COUNT; t++) {
+                      u16 move;
+                      s32 score;
+                      if (!CanLearnTutorMove(species, t)) continue;
+                      move = GetTutorMove(t);
+                      score = TrainerMoveScore(move, species, atk, spAtk, seed + round,
+                                               selected, chosenCount);
+                      if (score > bestScore) { bestScore = score; bestMove = move; }
+                  }
+                  if (bestMove == MOVE_NONE) break;
+                  selected[chosenCount++] = bestMove;
+              }
+              // Only write a generated set when there is at least one legal candidate.
+              if (chosenCount != 0) {
+                  for (round = 0; round < MAX_MON_MOVES; round++) {
+                      u16 move = selected[round];
+                      u8 pp;
+                      SetMonData(mon, MON_DATA_MOVE1 + round, &move);
+                      pp = CalculatePPWithBonus(move, GetMonData(mon, MON_DATA_PP_BONUSES, NULL), round);
+                      SetMonData(mon, MON_DATA_PP1 + round, &pp);
+                  }
+              }
+          }
+
+          '''
+          # Avoid accidental indentation: embedded source is kept as-is.
+          s = s.replace(anchor, helper + anchor, 1)
+          old = '''if (trainerNum == TRAINER_OLDPLAYER || prototypeRandomized) {'''
+          new = '''if (prototypeRandomized) {
+                SetCompetitiveTrainerMoves(&party[i], species, trainerNum, i);
+            } else if (trainerNum == TRAINER_OLDPLAYER) {'''
+          if s.count(old) != 1:
+              raise SystemExit('Expected move-selection branch not found exactly once')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          print('Installed experimental legal-movepool trainer selector')
+          PYCODE
+          git diff -- src/battle_main.c > ../report/competitive-moves.patch
+
       - name: Configure debug shortcut
         run: |
           set -euo pipefail
