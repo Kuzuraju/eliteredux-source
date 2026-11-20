@@ -11,6 +11,7 @@ jobs:
   merge:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+
     env:
       TARGET_BRANCH: upstream-update-test-${{ github.run_id }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -20,107 +21,216 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           mkdir -p work report
           cd work
 
           git init -q
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git remote add upstream https://github.com/Elite-Redux/eliteredux-source.git
+
+          git remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+
+          git remote add upstream \
+            "https://github.com/Elite-Redux/eliteredux-source.git"
 
           AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
 
-          git -c http.https://github.com/.extraheader="$AUTH_HEADER" fetch --no-tags origin +refs/heads/upcoming:refs/remotes/origin/upcoming
-          git fetch --no-tags upstream +refs/heads/upcoming:refs/remotes/upstream/upcoming
+          git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+            fetch --no-tags origin \
+            +refs/heads/upcoming:refs/remotes/origin/upcoming
 
-          git checkout -q -b "$TARGET_BRANCH" refs/remotes/origin/upcoming
+          git fetch --no-tags upstream \
+            +refs/heads/upcoming:refs/remotes/upstream/upcoming
+
+          git checkout -q -b "$TARGET_BRANCH" \
+            refs/remotes/origin/upcoming
 
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
 
-          printf 'Local: %s\nUpstream: %s\n' "$(git rev-parse origin/upcoming)" "$(git rev-parse upstream/upcoming)" > ../report/commits.txt
-          git merge-base origin/upcoming upstream/upcoming > ../report/merge-base.txt || true
+          git rev-parse origin/upcoming \
+            > ../report/local-commit.txt
 
-      - name: Attempt safe merge and check graphics
+          git rev-parse upstream/upcoming \
+            > ../report/upstream-commit.txt
+
+          git merge-base origin/upcoming upstream/upcoming \
+            > ../report/merge-base.txt
+
+      - name: Merge upstream and preserve Manual.yml
         id: merge
         shell: bash
         run: |
           set -euo pipefail
           cd work
 
-          if git merge --no-commit --no-ff upstream/upcoming > ../report/merge-output.txt 2>&1; then
+          MANUAL=".github/workflows/Manual.yml"
+
+          echo "Starting upstream merge..."
+
+          if git merge --no-commit --no-ff \
+            upstream/upcoming \
+            > ../report/merge-output.txt 2>&1; then
             MERGE_STATUS=0
           else
             MERGE_STATUS=$?
           fi
 
-          printf 'Git merge exit code: %s\n' "$MERGE_STATUS" > ../report/merge-exit-code.txt
+          echo "Initial merge exit code: $MERGE_STATUS" \
+            > ../report/merge-exit-code.txt
 
-          git status --short > ../report/status-after-merge.txt
-          git diff --name-only --diff-filter=U > ../report/unmerged-paths.txt
-          git diff --name-status origin/upcoming -- graphics/pokemon > ../report/graphics-diff-from-local.txt
-          git diff --name-status origin/upcoming -- . ':!graphics/pokemon' > ../report/other-diff-from-local.txt
+          git diff --name-only --diff-filter=U \
+            > ../report/initial-conflicts.txt
 
-          if [ "$MERGE_STATUS" -ne 0 ] || [ -s ../report/unmerged-paths.txt ]; then
-            echo 'Merge requires manual conflict resolution. Nothing will be pushed.' | tee ../report/result.txt
-            echo 'ready=false' >> "$GITHUB_OUTPUT"
+          if [ ! -f .git/MERGE_HEAD ]; then
+            echo "No active merge. Nothing will be pushed." \
+              | tee ../report/result.txt
+            echo "ready=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          BASE=$(git merge-base origin/upcoming upstream/upcoming)
+          if grep -Fxq "$MANUAL" \
+            ../report/initial-conflicts.txt; then
 
-          git diff --name-only "$BASE" origin/upcoming -- graphics/pokemon > ../report/local-graphics-changed.txt
-          git diff --name-only origin/upcoming -- graphics/pokemon > ../report/merged-graphics-changed.txt
+            echo "Keeping local Manual.yml"
+
+            git checkout --ours -- "$MANUAL"
+            git add -- "$MANUAL"
+
+            echo "Manual.yml resolved using local version." \
+              > ../report/manual-resolution.txt
+          else
+            echo "Manual.yml had no direct conflict." \
+              > ../report/manual-resolution.txt
+          fi
+
+          # Preserve local Manual.yml even if Git
+          # automatically merged changes into it.
+          git restore \
+            --source=origin/upcoming \
+            --staged --worktree \
+            -- "$MANUAL"
+
+          git diff --name-only --diff-filter=U \
+            > ../report/remaining-conflicts.txt
+
+          git status --short \
+            > ../report/status-after-resolution.txt
+
+          if [ -s ../report/remaining-conflicts.txt ]; then
+            echo "Other conflicts remain. No push." \
+              | tee ../report/result.txt
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Verify Manual.yml is identical to local.
+          OLD_MANUAL=$(git rev-parse \
+            "origin/upcoming:$MANUAL")
+
+          NEW_MANUAL=$(git rev-parse ":$MANUAL")
+
+          if [ "$OLD_MANUAL" != "$NEW_MANUAL" ]; then
+            echo "Manual.yml verification failed." \
+              | tee ../report/result.txt
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Manual.yml preserved byte-for-byte." \
+            >> ../report/manual-resolution.txt
+
+          echo "Checking customized graphics..."
+
+          BASE=$(git merge-base \
+            origin/upcoming upstream/upcoming)
+
+          git diff --name-only \
+            "$BASE" origin/upcoming \
+            -- graphics/pokemon \
+            > ../report/local-graphics-changed.txt
 
           python3 - <<'PY'
           import subprocess
           from pathlib import Path
 
-          names = Path('../report/local-graphics-changed.txt').read_text().splitlines()
+          paths = Path(
+              '../report/local-graphics-changed.txt'
+          ).read_text().splitlines()
+
           problems = []
 
-          for path in names:
+          for path in paths:
               old = subprocess.run(
-                  ['git', 'rev-parse', f'origin/upcoming:{path}'],
-                  capture_output=True, text=True
+                  ['git', 'rev-parse',
+                   f'origin/upcoming:{path}'],
+                  capture_output=True,
+                  text=True
               )
               new = subprocess.run(
-                  ['git', 'rev-parse', f':{path}'],
-                  capture_output=True, text=True
+                  ['git', 'rev-parse',
+                   f':{path}'],
+                  capture_output=True,
+                  text=True
               )
-              if old.returncode != 0 or new.returncode != 0 or old.stdout.strip() != new.stdout.strip():
+
+              if (
+                  old.returncode != new.returncode
+                  or (
+                      old.returncode == 0
+                      and old.stdout.strip()
+                      != new.stdout.strip()
+                  )
+              ):
                   problems.append(path)
 
-          Path('../report/local-graphics-not-preserved.txt').write_text(
-              '\n'.join(problems) + ('\n' if problems else '')
+          Path(
+              '../report/graphics-not-preserved.txt'
+          ).write_text(
+              '\n'.join(problems)
+              + ('\n' if problems else '')
           )
           PY
 
-          if [ -s ../report/local-graphics-not-preserved.txt ]; then
-            echo 'Some locally modified graphics changed in merge. Nothing will be pushed.' | tee ../report/result.txt
-            echo 'ready=false' >> "$GITHUB_OUTPUT"
+          if [ -s ../report/graphics-not-preserved.txt ]; then
+            echo "Customized graphics changed. No push." \
+              | tee ../report/result.txt
+            echo "ready=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo 'Clean merge; locally changed graphics are preserved byte-for-byte.' | tee ../report/result.txt
-          echo 'ready=true' >> "$GITHUB_OUTPUT"
+          git diff --cached --name-status \
+            > ../report/staged-changes.txt
 
-      - name: Commit and publish isolated test branch
+          echo "Merge ready. Manual.yml and customized graphics preserved." \
+            | tee ../report/result.txt
+
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish isolated update branch
         if: steps.merge.outputs.ready == 'true'
         shell: bash
         run: |
           set -euo pipefail
           cd work
 
-          git commit -m "Merge official Elite Redux upcoming into isolated test branch"
+          git commit -m \
+            "Merge official upstream while preserving local Manual.yml and graphics"
 
           AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
 
-          git -c http.https://github.com/.extraheader="$AUTH_HEADER" push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+            push origin \
+            "HEAD:refs/heads/$TARGET_BRANCH"
 
-          printf 'Published branch: %s\n' "$TARGET_BRANCH" >> ../report/result.txt
-          printf 'https://github.com/%s/tree/%s\n' "$GITHUB_REPOSITORY" "$TARGET_BRANCH" > ../report/branch-url.txt
+          echo "Published branch: $TARGET_BRANCH" \
+            >> ../report/result.txt
 
-      - name: Upload merge report
+          echo "https://github.com/${GITHUB_REPOSITORY}/tree/${TARGET_BRANCH}" \
+            > ../report/branch-url.txt
+
+      - name: Upload diagnostic report
         if: always()
         uses: actions/upload-artifact@v4
         with:
