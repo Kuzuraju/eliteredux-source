@@ -1,0 +1,468 @@
+name: Trainer Randomizer V2 - Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [trainer-randomizer-v2-test]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+
+    env:
+      GAME_VERSION: EMERALD
+      GAME_REVISION: 0
+      GAME_LANGUAGE: ENGLISH
+      MODERN: 0
+      COMPARE: 0
+      DEBIAN_FRONTEND: noninteractive
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out test source
+        uses: actions/checkout@v4
+        with:
+          path: work
+          persist-credentials: false
+
+      - name: Record source commit
+        run: |
+          set -euo pipefail
+          mkdir -p report
+          git -C work rev-parse HEAD | tee report/source-commit.txt
+
+      - name: Verify ROM and prototype
+        run: |
+          set -euo pipefail
+          cd work
+
+          test -f rom.gba
+          test -f src/battle_main.c
+          test -f src/pokemon.c
+          test -f src/ui_intro_options.c
+          test -f include/global.h
+
+          grep -q GetPrototypeTrainerSpecies src/battle_main.c
+          grep -q trainerRandomizedMode include/global.h
+          grep -q SETTING_TRAINER_RANDOMIZER_MODE src/ui_intro_options.c
+
+          ls -lh rom.gba
+
+          echo "Prototype verified." \
+            > ../report/prototype-check.txt
+
+      - name: Fetch official er-config
+        run: |
+          set -euo pipefail
+          cd work
+
+          git clone \
+            https://github.com/Elite-Redux/er-config.git \
+            proto
+
+          git -C proto checkout --detach \
+            8726330add2f24370dfcd1e9d4eff9bc7e6767b4
+
+          git -C proto rev-parse HEAD \
+            > ../report/config-commit.txt
+
+          test -f proto/MoveList.textproto
+          test -f proto/SpeciesList.textproto
+
+      - name: Apply move metadata fixes
+        run: |
+          set -euo pipefail
+          cd work
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("proto/MoveList.textproto")
+          content = path.read_text()
+
+          fixes = [
+              (
+                  "MOVE_SPARKLING_BLAST",
+                  "short_name",
+                  "SparklBlast",
+              ),
+              (
+                  "MOVE_GLITTER_BEAM",
+                  "description",
+                  "A shining beam that lowers "
+                  "the foe's accuracy. Light-based.",
+              ),
+          ]
+
+          for move, field, replacement in fixes:
+              pattern = (
+                  r'(moves\s*\{\s*'
+                  + r'id:\s*'
+                  + re.escape(move)
+                  + r'\b[^}]*?'
+                  + re.escape(field)
+                  + r':\s*")'
+                  + r'(?:\\.|[^"\\])*'
+                  + r'(")'
+              )
+
+              content, count = re.subn(
+                  pattern,
+                  lambda m, value=replacement:
+                      m.group(1) + value + m.group(2),
+                  content,
+                  count=1,
+                  flags=re.DOTALL,
+              )
+
+              print(
+                  f"{move}: "
+                  + ("patched" if count else "unchanged")
+              )
+
+          path.write_text(content)
+          PY
+
+      - name: Configure debug shortcut
+        run: |
+          set -euo pipefail
+          cd work
+
+          if [ -f include/debug.h ]; then
+            sed -i -E \
+              's/^(#define TX_DEBUG_SYSTEM_IN_MENU[[:space:]]+)TRUE/\1FALSE/' \
+              include/debug.h
+          fi
+
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Check available dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p report
+
+          {
+            echo "Dependency preflight"
+            date -u
+            uname -a
+            echo
+
+            for command in \
+              git \
+              make \
+              gcc \
+              arm-none-eabi-gcc \
+              arm-none-eabi-g++ \
+              arm-none-eabi-as \
+              wget \
+              unzip \
+              java
+            do
+              if command -v "$command" >/dev/null 2>&1; then
+                echo "OK: $command"
+              else
+                echo "MISSING: $command"
+              fi
+            done
+
+            echo
+            dpkg-query -W \
+              build-essential \
+              git \
+              libpng-dev \
+              gcc-arm-none-eabi \
+              binutils-arm-none-eabi \
+              libnewlib-arm-none-eabi \
+              libnewlib-dev \
+              libstdc++-arm-none-eabi-dev \
+              unzip \
+              wget \
+              2>&1 || true
+
+          } | tee report/dependency-preflight.log
+
+      - name: Install missing dependencies
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+
+          {
+            echo "Starting dependency installation"
+            date -u
+
+            REQUIRED=(
+              build-essential
+              git
+              libpng-dev
+              gcc-arm-none-eabi
+              binutils-arm-none-eabi
+              libnewlib-arm-none-eabi
+              libnewlib-dev
+              libstdc++-arm-none-eabi-dev
+              unzip
+              wget
+            )
+
+            MISSING=()
+
+            for package in "${REQUIRED[@]}"; do
+              if dpkg-query -W \
+                -f='${Status}' "$package" 2>/dev/null \
+                | grep -qx 'install ok installed'; then
+
+                echo "Already installed: $package"
+              else
+                echo "Missing package: $package"
+                MISSING+=("$package")
+              fi
+            done
+
+            if [ "${#MISSING[@]}" -eq 0 ]; then
+              echo "All packages already installed."
+            else
+              echo "Updating apt indexes..."
+
+              timeout --signal=TERM --kill-after=15s \
+                240s \
+                sudo apt-get \
+                  -o DPkg::Lock::Timeout=30 \
+                  -o Acquire::Retries=2 \
+                  -o Acquire::http::Timeout=30 \
+                  -o Acquire::https::Timeout=30 \
+                  update
+
+              echo "Checking package availability..."
+
+              for package in "${MISSING[@]}"; do
+                echo "Package: $package"
+                apt-cache policy "$package"
+              done
+
+              echo "Installing missing packages..."
+
+              timeout --signal=TERM --kill-after=15s \
+                300s \
+                sudo apt-get \
+                  -o DPkg::Lock::Timeout=30 \
+                  -o Acquire::Retries=2 \
+                  -o Acquire::http::Timeout=30 \
+                  -o Acquire::https::Timeout=30 \
+                  install -y --no-install-recommends \
+                  "${MISSING[@]}"
+            fi
+
+            echo
+            echo "Checking ARM compilers..."
+
+            arm-none-eabi-gcc --version
+            arm-none-eabi-g++ --version
+
+            echo
+            echo "Dependency installation completed."
+            date -u
+
+          } 2>&1 | tee report/dependencies.log
+
+      - name: Verify ARM C standard headers
+        run: |
+          set -euo pipefail
+          mkdir -p report
+
+          {
+            echo "Checking ARM C standard library"
+            echo
+
+            printf '#include <string.h>\nint main(void) { return 0; }\n' \
+              | arm-none-eabi-gcc \
+                  -x c \
+                  -fsyntax-only \
+                  -
+
+            echo
+            echo "ARM string.h check passed."
+
+          } 2>&1 | tee report/arm-headers-check.log
+
+      - name: Verify ARM C++ standard headers
+        run: |
+          set -euo pipefail
+          mkdir -p report
+
+          {
+            echo "Checking ARM C++ standard library"
+            echo
+
+            printf '#include <cstddef>\nint main() { return 0; }\n' \
+              | arm-none-eabi-g++ \
+                  -x c++ \
+                  -fsyntax-only \
+                  -
+
+            echo
+            echo "ARM cstddef check passed."
+
+            echo
+            echo "C++ include search paths:"
+
+            printf '' \
+              | arm-none-eabi-g++ \
+                  -x c++ \
+                  -E -v - \
+                  >/dev/null
+
+          } 2>&1 | tee report/arm-cpp-headers-check.log
+
+      - name: Install Kotlin 2.1.0
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+
+          KOTLIN_VERSION=2.1.0
+
+          wget --timeout=30 --tries=3 -q \
+            "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
+            -O "$RUNNER_TEMP/kotlin.zip"
+
+          mkdir -p "$RUNNER_TEMP/kotlin"
+
+          unzip -q "$RUNNER_TEMP/kotlin.zip" \
+            -d "$RUNNER_TEMP/kotlin"
+
+          echo "$RUNNER_TEMP/kotlin/kotlinc/bin" \
+            >> "$GITHUB_PATH"
+
+          "$RUNNER_TEMP/kotlin/kotlinc/bin/kotlinc" \
+            -version
+
+      - name: Install Poryscript 3.5.2
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          cd work/tools
+
+          rm -rf \
+            poryscript \
+            poryscript-linux \
+            poryscript-linux.zip
+
+          wget --timeout=30 --tries=3 -q \
+            https://github.com/huderlem/poryscript/releases/download/3.5.2/poryscript-linux.zip \
+            -O poryscript-linux.zip
+
+          unzip -o -q poryscript-linux.zip
+
+          mv poryscript-linux poryscript
+          chmod +x poryscript
+
+          rm poryscript-linux.zip
+
+      - name: Adjust compiler flags
+        run: |
+          set -euo pipefail
+          cd work
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("Makefile")
+          source = path.read_text()
+
+          source = source.replace(
+              "-std=gnu23",
+              "-std=gnu2x",
+          )
+
+          source = re.sub(
+              r"-Werror\b",
+              "-Wno-error",
+              source,
+          )
+
+          path.write_text(source)
+          PY
+
+      - name: Generate code
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          cd work
+
+          make -C tools/codegen \
+            2>&1 | tee ../report/codegen.log
+
+          test -f \
+            include/generated/data/megas/legendary_sage.h
+
+          test -f \
+            include/generated/data/megas/adoption_center.h
+
+      - name: Compile Trainer Randomizer V2
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          cd work
+
+          make -j"$(nproc)" \
+            2>&1 | tee ../report/build.log
+
+          test -f pokeemerald_modern.gba
+
+          ls -lh pokeemerald_modern.gba
+
+          echo "Compilation successful." \
+            > ../report/build-result.txt
+
+      - name: Create and verify BPS patch
+        run: |
+          set -euo pipefail
+          cd work
+
+          chmod +x ./flips-linux
+
+          ./flips-linux --create \
+            rom.gba \
+            pokeemerald_modern.gba \
+            TrainerRandomizerV2.bps
+
+          ./flips-linux --apply \
+            TrainerRandomizerV2.bps \
+            rom.gba \
+            TrainerRandomizerV2.gba
+
+          cmp \
+            pokeemerald_modern.gba \
+            TrainerRandomizerV2.gba
+
+          echo "BPS verification successful." \
+            > ../report/patch-result.txt
+
+      - name: Upload diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrainerRandomizerV2-Build-Report
+          path: report/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload verified BPS patch
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrainerRandomizerV2-Build
+          path: work/TrainerRandomizerV2.bps
+          if-no-files-found: error
+          retention-days: 14
