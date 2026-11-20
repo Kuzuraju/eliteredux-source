@@ -411,7 +411,7 @@ jobs:
           static void SetCompetitiveTrainerMoves(struct Pokemon *mon, SpeciesEnum species, u16 trainerNum, u8 slot)
           {
               u16 levelMoves[MAX_LEVEL_UP_MOVES];
-              u16 eggMoves[EGG_MOVES_ARRAY_COUNT];
+              u16 eggMoves[256];
               u16 selected[MAX_MON_MOVES] = {MOVE_NONE, MOVE_NONE, MOVE_NONE, MOVE_NONE};
               u8 levelCount = GetLevelUpMovesBySpecies(species, levelMoves);
               u8 eggCount = GetEggMoveTutorMoves(mon, eggMoves);
