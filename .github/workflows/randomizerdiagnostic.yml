@@ -1,0 +1,157 @@
+
+name: Randomizer Diagnostic
+
+on:
+  workflow_dispatch:
+
+jobs:
+  investigate:
+    name: Investigate Elite Redux Randomizer
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: upcoming
+          submodules: false
+
+      - name: Repository information
+        run: |
+          echo "=== Branch and commit ==="
+          git branch --show-current
+          git rev-parse HEAD
+
+          echo "=== Source directories ==="
+          ls -d src include data 2>/dev/null || true
+
+      - name: Find randomizer implementation
+        run: |
+          echo "=== Randomizer source files ==="
+
+          find src include data \
+            -type f \
+            \( -iname '*random*' -o -iname '*seed*' \) \
+            2>/dev/null | sort || true
+
+          echo "=== Randomizer functions and settings ==="
+
+          grep -RniE \
+            'RANDOMIZED_MODE|randomiz(e|er|ation)|random_species|randomSpecies|wild.*random|random.*wild' \
+            src include \
+            --include='*.c' \
+            --include='*.h' \
+            2>/dev/null | head -250 || true
+
+      - name: Find trainer party generation
+        run: |
+          echo "=== Trainer party functions ==="
+
+          grep -RniE \
+            'CreateNPCTrainerParty|CreateTrainerParty|Create.*Trainer.*Mon|trainerParty|TrainerMon|trainerMons|gTrainers' \
+            src include \
+            --include='*.c' \
+            --include='*.h' \
+            2>/dev/null | head -300 || true
+
+          echo "=== Trainer source files ==="
+
+          find src include data \
+            -type f \
+            \( -iname '*trainer*' -o -iname '*battle_setup*' \) \
+            2>/dev/null | sort | head -150 || true
+
+      - name: Find game options
+        run: |
+          echo "=== Options and settings ==="
+
+          grep -RniE \
+            'randomizer|randomized|Randomized|OptionMenu|OptionsMenu|NewGame|newGame' \
+            src \
+            --include='*.c' \
+            2>/dev/null | head -250 || true
+
+          echo "=== Relevant option files ==="
+
+          find src include \
+            -type f \
+            \( -iname '*option*' -o -iname '*setting*' \) \
+            2>/dev/null | sort || true
+
+      - name: Find seed and save structures
+        run: |
+          echo "=== RNG and seed functions ==="
+
+          grep -RniE \
+            'Random32|Random2|SeedRng|SeedRng2|gRngValue|randomSeed|randomizerSeed' \
+            src include \
+            --include='*.c' \
+            --include='*.h' \
+            2>/dev/null | head -250 || true
+
+          echo "=== Save structures ==="
+
+          grep -RniE \
+            'struct SaveBlock1|struct SaveBlock2|struct SaveBlock3|gSaveBlock2Ptr|gSaveBlock1Ptr' \
+            include \
+            --include='*.h' \
+            2>/dev/null | head -150 || true
+
+      - name: Create diagnostic report
+        run: |
+          mkdir -p randomizer-diagnostic
+
+          {
+            echo "ELITE REDUX RANDOMIZER DIAGNOSTIC"
+            echo "================================"
+            echo
+            echo "Commit:"
+            git rev-parse HEAD
+            echo
+            echo "Randomizer references:"
+            grep -RniE \
+              'RANDOMIZED_MODE|randomiz(e|er|ation)|random_species|randomSpecies' \
+              src include \
+              --include='*.c' \
+              --include='*.h' \
+              2>/dev/null | head -500 || true
+
+            echo
+            echo "Trainer references:"
+            grep -RniE \
+              'CreateNPCTrainerParty|CreateTrainerParty|Create.*Trainer.*Mon|trainerParty|TrainerMon|trainerMons|gTrainers' \
+              src include \
+              --include='*.c' \
+              --include='*.h' \
+              2>/dev/null | head -500 || true
+
+            echo
+            echo "Seed references:"
+            grep -RniE \
+              'Random32|Random2|SeedRng|SeedRng2|gRngValue|randomizerSeed' \
+              src include \
+              --include='*.c' \
+              --include='*.h' \
+              2>/dev/null | head -300 || true
+
+            echo
+            echo "Relevant source files:"
+            find src include data \
+              -type f \
+              \( -iname '*random*' \
+              -o -iname '*trainer*' \
+              -o -iname '*option*' \
+              -o -iname '*setting*' \
+              -o -iname '*battle_setup*' \) \
+              2>/dev/null | sort || true
+
+          } > randomizer-diagnostic/report.txt
+
+          wc -l randomizer-diagnostic/report.txt
+
+      - name: Upload diagnostic report
+        uses: actions/upload-artifact@v4
+        with:
+          name: EliteRedux-Randomizer-Diagnostic
+          path: randomizer-diagnostic/report.txt
+          if-no-files-found: error
