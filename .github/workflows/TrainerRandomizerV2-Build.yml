@@ -300,7 +300,6 @@ jobs:
               git \
               libpng-dev \
               gcc-arm-none-eabi \
-              g++-arm-none-eabi \
               binutils-arm-none-eabi \
               libnewlib-arm-none-eabi \
               libnewlib-dev \
@@ -325,7 +324,6 @@ jobs:
               git
               libpng-dev
               gcc-arm-none-eabi
-              g++-arm-none-eabi
               binutils-arm-none-eabi
               libnewlib-arm-none-eabi
               libnewlib-dev
