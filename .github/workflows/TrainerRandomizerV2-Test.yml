@@ -62,7 +62,7 @@ jobs:
            void CreateSecretBaseEnemyParty(struct SecretBase* secretBaseRecord);
            u8 GetSecretBaseTrainerPicIndex(void);
           diff --git a/src/battle_main.c b/src/battle_main.c
-          index 3768b301..3361fbf6 100644
+          index 3768b301..eaeb532c 100644
           --- a/src/battle_main.c
           +++ b/src/battle_main.c
           @@ -22,6 +22,7 @@
@@ -81,25 +81,100 @@ jobs:
            #include "mgba_printf/mgba.h"
            #include "mgba_printf/mini_printf.h"
            #include "palette.h"
-          @@ -1729,23 +1731,377 @@ static void sub_8038538(struct Sprite* sprite) {
-           // Deterministic per trainer, slot and difficulty; never consumes battle RNG.
-           static SpeciesEnum GetPrototypeTrainerSpecies(u16 trainerNum, u8 slot, u8 difficulty, SpeciesEnum original)
+          @@ -1726,26 +1728,447 @@ static void sub_8038538(struct Sprite* sprite) {
+               }
+           }
+           
+          -// Deterministic per trainer, slot and difficulty; never consumes battle RNG.
+          -static SpeciesEnum GetPrototypeTrainerSpecies(u16 trainerNum, u8 slot, u8 difficulty, SpeciesEnum original)
+          +enum TrainerEvolutionStage {
+          +    TRAINER_STAGE_UNEVOLVING = 0,
+          +    TRAINER_STAGE_FIRST = 1,
+          +    TRAINER_STAGE_FINAL = 2,
+          +    TRAINER_STAGE_MIDDLE = 3,
+          +};
+          +
+          +static const u8 *GetTrainerEvolutionStages(void)
            {
           -    u32 seed = VarGet(VAR_RANDOMIZED_SEED);
-          +    u32 seed = GetOrInitTrainerRandomizerSeed();
-               u16 attempt;
+          -    u16 attempt;
           -    if (!seed) return original;
+          +    static EWRAM_DATA u8 stages[REAL_SPECIES_COUNT] = {0};
+          +    static EWRAM_DATA bool8 initialized = FALSE;
+          +    if (!initialized) {
+          +        for (u16 species = 1; species < REAL_SPECIES_COUNT; species++) {
+          +            const struct Evolution *evolutions = gEvolutionTable[species];
+          +            if (evolutions == NULL)
+          +                continue;
+          +
+          +            for (u16 i = 0; evolutions[i].method != 0; i++) {
+          +                SpeciesEnum target = evolutions[i].targetSpecies;
+          +                if (evolutions[i].method == EVO_DEEVOLUTION || target <= SPECIES_NONE
+          +                    || target >= REAL_SPECIES_COUNT || target == species)
+          +                    continue;
+          +
+          +                stages[species] |= TRAINER_STAGE_FIRST;
+          +                stages[target] |= TRAINER_STAGE_FINAL;
+          +            }
+          +        }
+          +        initialized = TRUE;
+          +    }
+          +    return stages;
+          +}
+          +
+          +static u16 GetTrainerSpeciesBaseStatTotal(SpeciesEnum species)
+          +{
+          +    const struct BaseStats *stats = &gBaseStats[species];
+          +    return stats->baseHP + stats->baseAttack + stats->baseDefense
+          +         + stats->baseSpeed + stats->baseSpAttack + stats->baseSpDefense;
+          +}
+          +
+          +// Rank a deterministic sample so evolution stage is a preference, with power as a second signal.
+          +static SpeciesEnum GetPrototypeTrainerSpecies(u16 trainerNum, u8 slot, u8 difficulty, SpeciesEnum original, u8 level)
+          +{
+          +    const u8 *stages = GetTrainerEvolutionStages();
+          +    u8 preferredStage = level < 18 ? TRAINER_STAGE_FIRST
+          +                      : level < 36 ? TRAINER_STAGE_MIDDLE : TRAINER_STAGE_FINAL;
+          +    s32 typicalPower = level < 18 ? 315 : level < 36 ? 410 : 510;
+          +    s32 originalPower = GetTrainerSpeciesBaseStatTotal(original);
+          +    if (originalPower < typicalPower - 30)
+          +        originalPower = typicalPower - 30;
+          +    if (originalPower > typicalPower + 30)
+          +        originalPower = typicalPower + 30;
+          +
+          +    u32 seed = GetOrInitTrainerRandomizerSeed();
                seed ^= (u32)trainerNum * 0x9E3779B9u;
                seed ^= (u32)(slot + 1) * 0x85EBCA6Bu;
                seed ^= (u32)(difficulty + 1) * 0xC2B2AE35u;
                if (!seed) seed = 1;
-               for (attempt = 0; attempt < 512; attempt++) {
+          -    for (attempt = 0; attempt < 512; attempt++) {
+          +
+          +    SpeciesEnum bestSpecies = original;
+          +    s32 bestScore = 32767;
+          +    u8 eligible = 0;
+          +    for (u16 attempt = 0; attempt < 512 && eligible < 32; attempt++) {
                    SpeciesEnum candidate = RandRangeDeterministic(1, REAL_SPECIES_COUNT - 1, &seed);
           -        if (IsSpeciesRandomizerAllowed(candidate, FALSE, TRUE)) return candidate;
-          +        if (candidate != original && TrainerRandomizerSpeciesAllowed(candidate))
-          +            return candidate;
+          +        if (candidate == original || !TrainerRandomizerSpeciesAllowed(candidate))
+          +            continue;
+          +
+          +        eligible++;
+          +        s32 statDifference = GetTrainerSpeciesBaseStatTotal(candidate) - originalPower;
+          +        s32 score = statDifference < 0 ? -statDifference : statDifference;
+          +        if (statDifference > 65)
+          +            score += statDifference - 65;
+          +        if (stages[candidate] != TRAINER_STAGE_UNEVOLVING && stages[candidate] != preferredStage)
+          +            score += 45;
+          +
+          +        // Leave room for variety among candidates of roughly comparable power.
+          +        score += RandRangeDeterministic(0, 60, &seed);
+          +        if (score < bestScore) {
+          +            bestScore = score;
+          +            bestSpecies = candidate;
+          +        }
                }
-               return original;
+          -    return original;
+          +    return bestSpecies;
            }
            
           -static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 firstTrainer) {
@@ -250,7 +325,7 @@ jobs:
           +            return stone;
           +        }
           +    }
-          +
+           
           +    for (u8 slot = 0; slot < MAX_MON_MOVES; slot++) {
           +        u16 move = GetMonData(mon, MON_DATA_MOVE1 + slot, NULL);
           +        if (move == MOVE_NONE)
@@ -458,13 +533,13 @@ jobs:
           +#undef OFFER
           +    return item;
           +}
-           
+          +
           +static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 firstTrainer) {
           +    bool8 assignedMega = FALSE;
                u32 nameHash = 0;
                u32 personalityValue;
                s32 i, j = 0;
-          @@ -1851,18 +2207,17 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+          @@ -1851,18 +2274,17 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
                        if (FlagGet(FLAG_DEBUG_GODMODE)) level = 1;
            #endif
            
@@ -486,7 +561,7 @@ jobs:
           +            } else {
           +                species = partyData[i].species;
           +                if (gSaveBlock2Ptr->trainerRandomizedMode) {
-          +                    species = GetPrototypeTrainerSpecies(trainerNum, i, difficultySetting, species);
+          +                    species = GetPrototypeTrainerSpecies(trainerNum, i, difficultySetting, species, level);
           +                    prototypeRandomized = (species != partyData[i].species);
           +                }
           +            }
@@ -494,7 +569,7 @@ jobs:
            
                        // Sets Pokemon Nature
                        SetMonData(&party[i], MON_DATA_NATURE, &partyData[i].nature);
-          @@ -1909,7 +2264,11 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+          @@ -1909,7 +2331,11 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
            
                        CalculateEnemyTrainerMonStats(&party[i]);
            
