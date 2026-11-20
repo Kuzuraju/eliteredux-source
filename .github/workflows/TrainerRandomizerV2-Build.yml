@@ -248,6 +248,71 @@ jobs:
             src/battle_main.c src/pokemon.c \
             > ../report/bridge.patch
 
+      - name: Fix trainer randomizer Random declaration
+        run: |
+          set -euo pipefail
+          cd work
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("src/ui_intro_options.c")
+          source = path.read_text()
+
+          if not re.search(
+              r'\bRandom\s*\(\s*\)',
+              source
+          ):
+              raise SystemExit(
+                  "ERROR: Random() call not found."
+              )
+
+          if re.search(
+              r'(?m)^\s*#\s*include\s*["<]random\.h[">]',
+              source
+          ):
+              print("random.h already included.")
+          else:
+              includes = list(
+                  re.finditer(
+                      r'(?m)^[ \t]*#[ \t]*include[ \t]+'
+                      r'[<"][^>"]+[>"][^\n]*(?:\n|$)',
+                      source
+                  )
+              )
+
+              if not includes:
+                  raise SystemExit(
+                      "ERROR: No includes found "
+                      "in ui_intro_options.c."
+                  )
+
+              if not Path("include/random.h").is_file():
+                  raise SystemExit(
+                      "ERROR: include/random.h not found."
+                  )
+
+              position = includes[-1].end()
+
+              source = (
+                  source[:position]
+                  + '#include "random.h"\n'
+                  + source[position:]
+              )
+
+              path.write_text(source)
+              print("Added #include \"random.h\".")
+
+          assert '#include "random.h"' in source
+
+          print("Random declaration fix prepared.")
+          PY
+
+          git diff -- \
+            src/ui_intro_options.c \
+            > ../report/random-header.patch
+
       - name: Configure debug shortcut
         run: |
           set -euo pipefail
