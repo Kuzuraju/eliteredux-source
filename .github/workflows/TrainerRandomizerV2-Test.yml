@@ -62,10 +62,18 @@ jobs:
            void CreateSecretBaseEnemyParty(struct SecretBase* secretBaseRecord);
            u8 GetSecretBaseTrainerPicIndex(void);
           diff --git a/src/battle_main.c b/src/battle_main.c
-          index 3768b301..82980c6c 100644
+          index 3768b301..3361fbf6 100644
           --- a/src/battle_main.c
           +++ b/src/battle_main.c
-          @@ -48,6 +48,7 @@
+          @@ -22,6 +22,7 @@
+           #include "generated/constants/battle_move_effects.h"
+           #include "constants/battle_string_ids.h"
+           #include "constants/hold_effects.h"
+          +#include "constants/flags.h"
+           #include "constants/items.h"
+           #include "generated/constants/moves.h"
+           #include "constants/opponents.h"
+          @@ -48,6 +49,7 @@
            #include "m4a.h"
            #include "main.h"
            #include "malloc.h"
@@ -73,7 +81,7 @@ jobs:
            #include "mgba_printf/mgba.h"
            #include "mgba_printf/mini_printf.h"
            #include "palette.h"
-          @@ -1729,23 +1730,127 @@ static void sub_8038538(struct Sprite* sprite) {
+          @@ -1729,23 +1731,377 @@ static void sub_8038538(struct Sprite* sprite) {
            // Deterministic per trainer, slot and difficulty; never consumes battle RNG.
            static SpeciesEnum GetPrototypeTrainerSpecies(u16 trainerNum, u8 slot, u8 difficulty, SpeciesEnum original)
            {
@@ -143,7 +151,7 @@ jobs:
           +    u16 offensiveStat = data->split == SPLIT_PHYSICAL ? attack : spAttack;
           +    u16 highestStat = attack > spAttack ? attack : spAttack;
           +    u16 power = data->power > 140 ? 140 : data->power;
-           
+          +
           +    score += 40 + (power * accuracy / 100) * offensiveStat / (highestStat ? highestStat : 1);
           +    if (data->type == gBaseStats[species].type1 || data->type == gBaseStats[species].type2)
           +        score += 40;
@@ -202,11 +210,261 @@ jobs:
           +    }
           +}
           +
+          +static bool8 TrainerMonHasAbility(struct Pokemon *mon, AbilityEnum ability)
+          +{
+          +    return GetMonAbility(mon) == ability || MonHasInnate(mon, ability, FALSE);
+          +}
+          +
+          +static u16 ChooseTrainerRandomizedHeldItem(struct Pokemon *mon, SpeciesEnum species,
+          +                                          u16 trainerNum, u8 partySlot, bool8 *assignedMega)
+          +{
+          +    u32 seed = ((u32)VarGet(VAR_RANDOMIZED_SEED) << 16)
+          +             ^ ((u32)trainerNum * 0x9E3779B9u) ^ ((u32)(partySlot + 1) * 0x85EBCA6Bu)
+          +             ^ 0xA5A5A5A5u;
+          +    _Static_assert(NUMBER_OF_MON_TYPES <= 32, "Type mask must fit in u32");
+          +    u16 item = ITEM_SITRUS_BERRY;
+          +    u16 totalWeight = 0;
+          +    u8 level = GetMonData(mon, MON_DATA_LEVEL, NULL);
+          +    u8 physical = 0, special = 0, status = 0, contact = 0;
+          +    u32 attackTypes = 0;
+          +    bool8 inaccurate = FALSE, multiHit = FALSE, sound = FALSE, punch = FALSE;
+          +    bool8 charge = FALSE, facade = FALSE, screen = FALSE, rest = FALSE;
+          +    bool8 rain = FALSE, sun = FALSE, snow = FALSE, sand = FALSE, fog = FALSE;
+          +    u32 terrains = 0;
+          +    bool8 selfDrop = FALSE, itemSwap = FALSE, statusTransfer = FALSE;
+          +    bool8 binding = FALSE, gyroBall = FALSE, technoBlast = FALSE, multiAttack = FALSE;
+          +
+          +    if (!*assignedMega && level >= 35 && FlagGet(FLAG_SYS_RECEIVED_KEYSTONE)
+          +        && CheckBagHasItem(ITEM_MEGA_BRACELET, 1) && RandRangeDeterministic(1, 5, &seed) == 1) {
+          +        const struct Evolution *forms = gFormChangeTable[species];
+          +        u16 eligibleStones = 0;
+          +        u16 stone = ITEM_NONE;
+          +        for (u16 i = 0; forms[i].method != 0; i++) {
+          +            if (forms[i].method == EVO_MEGA_EVOLUTION
+          +                && ItemId_GetHoldEffect(forms[i].param) == HOLD_EFFECT_MEGA_STONE
+          +                && RandRangeDeterministic(1, ++eligibleStones, &seed) == 1)
+          +                stone = forms[i].param;
+          +        }
+          +        if (stone != ITEM_NONE) {
+          +            *assignedMega = TRUE;
+          +            return stone;
+          +        }
+          +    }
+          +
+          +    for (u8 slot = 0; slot < MAX_MON_MOVES; slot++) {
+          +        u16 move = GetMonData(mon, MON_DATA_MOVE1 + slot, NULL);
+          +        if (move == MOVE_NONE)
+          +            continue;
+          +
+          +        const struct BattleMove *data = &gBattleMoves[move];
+          +        if (data->split == SPLIT_STATUS) {
+          +            status++;
+          +        } else {
+          +            physical += data->split == SPLIT_PHYSICAL;
+          +            special += data->split == SPLIT_SPECIAL;
+          +            attackTypes |= (u32)1 << data->type;
+          +            punch |= (data->flags & FLAG_IRON_FIST_BOOST) != 0;
+          +            contact += data->contact;
+          +        }
+          +        inaccurate |= data->accuracy > 0 && data->accuracy < 90;
+          +        multiHit |= data->effect == EFFECT_MULTI_HIT && data->hitCountOverride == 0;
+          +        sound |= (data->flags & FLAG_SOUND) != 0;
+          +        charge |= data->twoTurnMove && !data->everyOtherTurn;
+          +        facade |= move == MOVE_FACADE;
+          +        rest |= move == MOVE_REST;
+          +        screen |= move == MOVE_REFLECT || move == MOVE_LIGHT_SCREEN || move == MOVE_AURORA_VEIL;
+          +        rain |= move == MOVE_RAIN_DANCE;
+          +        sun |= move == MOVE_SUNNY_DAY;
+          +        snow |= move == MOVE_HAIL || move == MOVE_CHILLY_RECEPTION;
+          +        sand |= move == MOVE_SANDSTORM;
+          +        fog |= move == MOVE_EERIE_FOG;
+          +        if (move == MOVE_ELECTRIC_TERRAIN) terrains |= 1 << 0;
+          +        if (move == MOVE_GRASSY_TERRAIN) terrains |= 1 << 1;
+          +        if (move == MOVE_MISTY_TERRAIN) terrains |= 1 << 2;
+          +        if (move == MOVE_PSYCHIC_TERRAIN) terrains |= 1 << 3;
+          +        binding |= data->effect == EFFECT_TRAP;
+          +        selfDrop |= data->effect == EFFECT_OVERHEAT || move == MOVE_CLOSE_COMBAT || move == MOVE_SUPERPOWER;
+          +        itemSwap |= move == MOVE_TRICK || move == MOVE_SWITCHEROO;
+          +        statusTransfer |= move == MOVE_PSYCHO_SHIFT;
+          +        gyroBall |= move == MOVE_GYRO_BALL;
+          +        technoBlast |= move == MOVE_TECHNO_BLAST;
+          +        multiAttack |= move == MOVE_MULTI_ATTACK;
+          +    }
+          +
+          +    // Weighted reservoir sampling keeps the choice reproducible without storing a pool per mon.
+          +#define OFFER(candidate, weight) do { \
+          +    totalWeight += (weight); \
+          +    if (RandRangeDeterministic(1, totalWeight, &seed) <= (weight)) \
+          +        item = (candidate); \
+          +} while (0)
+          +    OFFER(ITEM_SITRUS_BERRY, 8);
+          +    if (level < 15) OFFER(ITEM_ORAN_BERRY, 8);
+          +    OFFER(ITEM_LUM_BERRY, 3);
+          +    OFFER(ITEM_FOCUS_SASH, 5);
+          +    OFFER(ITEM_LEFTOVERS, status >= 2 ? 9 : 4);
+          +    OFFER(ITEM_ROCKY_HELMET, status >= 2 ? 6 : 2);
+          +    OFFER(ITEM_HEAVY_DUTY_BOOTS, 3);
+          +    OFFER(ITEM_COVERT_CLOAK, 3);
+          +    OFFER(ITEM_CLEAR_AMULET, 2);
+          +    OFFER(ITEM_ABILITY_SHIELD, 1);
+          +    OFFER(ITEM_SAFETY_GOGGLES, 2);
+          +    OFFER(ITEM_BRIGHT_POWDER, 1);
+          +    OFFER(ITEM_QUICK_CLAW, 1);
+          +    OFFER(ITEM_RED_CARD, 1);
+          +    OFFER(ITEM_EJECT_BUTTON, 1);
+          +    OFFER(ITEM_SHED_SHELL, 1);
+          +    if (CanEvolveStrict(species)) OFFER(ITEM_EVIOLITE, 12);
+          +    if (status == 0 && physical + special >= 2) {
+          +        OFFER(ITEM_ASSAULT_VEST, 8);
+          +        OFFER(ITEM_TACTICAL_VEST, 8);
+          +        OFFER(ITEM_CHOICE_SCARF, 5);
+          +        if (physical > special) OFFER(ITEM_CHOICE_BAND, 7);
+          +        if (special > physical) OFFER(ITEM_CHOICE_SPECS, 7);
+          +    }
+          +    if (physical + special >= 2) {
+          +        OFFER(ITEM_LIFE_ORB, 5);
+          +        OFFER(ITEM_EXPERT_BELT, 4);
+          +        OFFER(ITEM_SHELL_BELL, 3);
+          +        OFFER(ITEM_SCOPE_LENS, 3);
+          +        OFFER(ITEM_KINGS_ROCK, 2);
+          +    }
+          +    if (physical > special) OFFER(ITEM_MUSCLE_BAND, 6);
+          +    if (special > physical) OFFER(ITEM_WISE_GLASSES, 6);
+          +    if (contact) OFFER(ITEM_PROTECTIVE_PADS, 5);
+          +    if (punch) OFFER(ITEM_PUNCHING_GLOVE, 7);
+          +    if (rest) OFFER(ITEM_CHESTO_BERRY, 20);
+          +    if (screen) OFFER(ITEM_LIGHT_CLAY, 20);
+          +    if (inaccurate) OFFER(ITEM_WIDE_LENS, 9);
+          +    if (multiHit && !TrainerMonHasAbility(mon, ABILITY_SKILL_LINK)) OFFER(ITEM_LOADED_DICE, 15);
+          +    if (sound && special) OFFER(ITEM_THROAT_SPRAY, 9);
+          +    if (charge) OFFER(ITEM_POWER_HERB, 6);
+          +    if (rain || TrainerMonHasAbility(mon, ABILITY_DRIZZLE)) OFFER(ITEM_DAMP_ROCK, 9);
+          +    if (sun || TrainerMonHasAbility(mon, ABILITY_DROUGHT)) OFFER(ITEM_HEAT_ROCK, 9);
+          +    if (snow || TrainerMonHasAbility(mon, ABILITY_SNOW_WARNING)) OFFER(ITEM_ICY_ROCK, 9);
+          +    if (sand || TrainerMonHasAbility(mon, ABILITY_SAND_STREAM)) OFFER(ITEM_SMOOTH_ROCK, 9);
+          +    if (fog || TrainerMonHasAbility(mon, ABILITY_FOG_MACHINE)) OFFER(ITEM_SMOKE_BALL, 9);
+          +    if (TrainerMonHasAbility(mon, ABILITY_ELECTRIC_SURGE)) terrains |= 1 << 0;
+          +    if (TrainerMonHasAbility(mon, ABILITY_GRASSY_SURGE)) terrains |= 1 << 1;
+          +    if (TrainerMonHasAbility(mon, ABILITY_MISTY_SURGE)) terrains |= 1 << 2;
+          +    if (TrainerMonHasAbility(mon, ABILITY_PSYCHIC_SURGE)) terrains |= 1 << 3;
+          +    if (terrains) OFFER(ITEM_TERRAIN_EXTENDER, 9);
+          +    if (terrains & (1 << 0)) OFFER(ITEM_ELECTRIC_SEED, 7);
+          +    if (terrains & (1 << 1)) OFFER(ITEM_GRASSY_SEED, 7);
+          +    if (terrains & (1 << 2)) OFFER(ITEM_MISTY_SEED, 7);
+          +    if (terrains & (1 << 3)) OFFER(ITEM_PSYCHIC_SEED, 7);
+          +    if (binding) OFFER(ITEM_BINDING_BAND, 8);
+          +    if (selfDrop) OFFER(ITEM_EJECT_PACK, 6);
+          +    if (selfDrop) OFFER(ITEM_WHITE_HERB, 6);
+          +    if (gyroBall || itemSwap) OFFER(ITEM_IRON_BALL, 3);
+          +    if (itemSwap) OFFER(ITEM_LAGGING_TAIL, 5);
+          +    if (statusTransfer && !special && gBaseStats[species].type1 != TYPE_ICE && gBaseStats[species].type2 != TYPE_ICE)
+          +        OFFER(ITEM_FROST_ORB, 5);
+          +    if (gBaseStats[species].type1 != TYPE_FLYING && gBaseStats[species].type2 != TYPE_FLYING
+          +        && !TrainerMonHasAbility(mon, ABILITY_LEVITATE)) OFFER(ITEM_AIR_BALLOON, 3);
+          +    if (!gSaveBlock2Ptr->typeRandomizedMode
+          +        && (gBaseStats[species].type1 == TYPE_POISON || gBaseStats[species].type2 == TYPE_POISON))
+          +        OFFER(ITEM_BLACK_SLUDGE, 6);
+          +    if (TrainerMonHasAbility(mon, ABILITY_POISON_HEAL) || TrainerMonHasAbility(mon, ABILITY_TOXIC_BOOST)
+          +        || (facade && !TrainerMonHasAbility(mon, ABILITY_GUTS)))
+          +        OFFER(ITEM_TOXIC_ORB, 12);
+          +    if ((physical && TrainerMonHasAbility(mon, ABILITY_GUTS))
+          +        || (special && TrainerMonHasAbility(mon, ABILITY_FLARE_BOOST)))
+          +        OFFER(ITEM_FLAME_ORB, 12);
+          +    if (physical + special >= 2 && (gBaseStats[species].baseDefense + gBaseStats[species].baseSpDefense >= 160))
+          +        OFFER(ITEM_WEAKNESS_POLICY, 5);
+          +    if ((physical > special && gBaseStats[species].baseSpAttack > gBaseStats[species].baseAttack + 20)
+          +        || (special > physical && gBaseStats[species].baseAttack > gBaseStats[species].baseSpAttack + 20))
+          +        OFFER(ITEM_SWIRLY_GLASSES, 6);
+          +
+          +    static const struct {
+          +        u16 item;
+          +        u8 type;
+          +        SpeciesEnum species;
+          +    } typedItems[] = {
+          +        {ITEM_SILK_SCARF, TYPE_NORMAL, SPECIES_NONE},
+          +        {ITEM_BLACK_BELT, TYPE_FIGHTING, SPECIES_NONE},
+          +        {ITEM_SHARP_BEAK, TYPE_FLYING, SPECIES_NONE},
+          +        {ITEM_POISON_BARB, TYPE_POISON, SPECIES_NONE},
+          +        {ITEM_SOFT_SAND, TYPE_GROUND, SPECIES_NONE},
+          +        {ITEM_ROCK_INCENSE, TYPE_ROCK, SPECIES_NONE},
+          +        {ITEM_HARD_STONE, TYPE_ROCK, SPECIES_NONE},
+          +        {ITEM_SILVER_POWDER, TYPE_BUG, SPECIES_NONE},
+          +        {ITEM_SPELL_TAG, TYPE_GHOST, SPECIES_NONE},
+          +        {ITEM_METAL_COAT, TYPE_STEEL, SPECIES_NONE},
+          +        {ITEM_CHARCOAL, TYPE_FIRE, SPECIES_NONE},
+          +        {ITEM_SEA_INCENSE, TYPE_WATER, SPECIES_NONE},
+          +        {ITEM_WAVE_INCENSE, TYPE_WATER, SPECIES_NONE},
+          +        {ITEM_MYSTIC_WATER, TYPE_WATER, SPECIES_NONE},
+          +        {ITEM_ROSE_INCENSE, TYPE_GRASS, SPECIES_NONE},
+          +        {ITEM_MIRACLE_SEED, TYPE_GRASS, SPECIES_NONE},
+          +        {ITEM_MAGNET, TYPE_ELECTRIC, SPECIES_NONE},
+          +        {ITEM_ODD_INCENSE, TYPE_PSYCHIC, SPECIES_NONE},
+          +        {ITEM_TWISTED_SPOON, TYPE_PSYCHIC, SPECIES_NONE},
+          +        {ITEM_NEVER_MELT_ICE, TYPE_ICE, SPECIES_NONE},
+          +        {ITEM_DRAGON_FANG, TYPE_DRAGON, SPECIES_NONE},
+          +        {ITEM_BLACK_GLASSES, TYPE_DARK, SPECIES_NONE},
+          +        {ITEM_FAIRY_FEATHER, TYPE_FAIRY, SPECIES_NONE},
+          +        {ITEM_BURN_DRIVE, TYPE_FIRE, SPECIES_GENESECT},
+          +        {ITEM_DOUSE_DRIVE, TYPE_WATER, SPECIES_GENESECT},
+          +        {ITEM_SHOCK_DRIVE, TYPE_ELECTRIC, SPECIES_GENESECT},
+          +        {ITEM_CHILL_DRIVE, TYPE_ICE, SPECIES_GENESECT},
+          +        {ITEM_FIST_PLATE, TYPE_FIGHTING, SPECIES_NONE},
+          +        {ITEM_SKY_PLATE, TYPE_FLYING, SPECIES_NONE},
+          +        {ITEM_TOXIC_PLATE, TYPE_POISON, SPECIES_NONE},
+          +        {ITEM_EARTH_PLATE, TYPE_GROUND, SPECIES_NONE},
+          +        {ITEM_STONE_PLATE, TYPE_ROCK, SPECIES_NONE},
+          +        {ITEM_INSECT_PLATE, TYPE_BUG, SPECIES_NONE},
+          +        {ITEM_SPOOKY_PLATE, TYPE_GHOST, SPECIES_NONE},
+          +        {ITEM_IRON_PLATE, TYPE_STEEL, SPECIES_NONE},
+          +        {ITEM_FLAME_PLATE, TYPE_FIRE, SPECIES_NONE},
+          +        {ITEM_SPLASH_PLATE, TYPE_WATER, SPECIES_NONE},
+          +        {ITEM_MEADOW_PLATE, TYPE_GRASS, SPECIES_NONE},
+          +        {ITEM_ZAP_PLATE, TYPE_ELECTRIC, SPECIES_NONE},
+          +        {ITEM_MIND_PLATE, TYPE_PSYCHIC, SPECIES_NONE},
+          +        {ITEM_ICICLE_PLATE, TYPE_ICE, SPECIES_NONE},
+          +        {ITEM_DRACO_PLATE, TYPE_DRAGON, SPECIES_NONE},
+          +        {ITEM_DREAD_PLATE, TYPE_DARK, SPECIES_NONE},
+          +        {ITEM_PIXIE_PLATE, TYPE_FAIRY, SPECIES_NONE},
+          +        {ITEM_FIGHTING_MEMORY, TYPE_FIGHTING, SPECIES_SILVALLY},
+          +        {ITEM_FLYING_MEMORY, TYPE_FLYING, SPECIES_SILVALLY},
+          +        {ITEM_POISON_MEMORY, TYPE_POISON, SPECIES_SILVALLY},
+          +        {ITEM_GROUND_MEMORY, TYPE_GROUND, SPECIES_SILVALLY},
+          +        {ITEM_ROCK_MEMORY, TYPE_ROCK, SPECIES_SILVALLY},
+          +        {ITEM_BUG_MEMORY, TYPE_BUG, SPECIES_SILVALLY},
+          +        {ITEM_GHOST_MEMORY, TYPE_GHOST, SPECIES_SILVALLY},
+          +        {ITEM_STEEL_MEMORY, TYPE_STEEL, SPECIES_SILVALLY},
+          +        {ITEM_FIRE_MEMORY, TYPE_FIRE, SPECIES_SILVALLY},
+          +        {ITEM_WATER_MEMORY, TYPE_WATER, SPECIES_SILVALLY},
+          +        {ITEM_GRASS_MEMORY, TYPE_GRASS, SPECIES_SILVALLY},
+          +        {ITEM_ELECTRIC_MEMORY, TYPE_ELECTRIC, SPECIES_SILVALLY},
+          +        {ITEM_PSYCHIC_MEMORY, TYPE_PSYCHIC, SPECIES_SILVALLY},
+          +        {ITEM_ICE_MEMORY, TYPE_ICE, SPECIES_SILVALLY},
+          +        {ITEM_DRAGON_MEMORY, TYPE_DRAGON, SPECIES_SILVALLY},
+          +        {ITEM_DARK_MEMORY, TYPE_DARK, SPECIES_SILVALLY},
+          +        {ITEM_FAIRY_MEMORY, TYPE_FAIRY, SPECIES_SILVALLY},
+          +    };
+          +    u16 typedCount = 0;
+          +    u16 typedItem = ITEM_NONE;
+          +    for (u16 i = 0; i < ARRAY_COUNT(typedItems); i++) {
+          +        bool8 eligible = FALSE;
+          +        if (typedItems[i].species == SPECIES_NONE)
+          +            eligible = (attackTypes & ((u32)1 << typedItems[i].type)) != 0;
+          +        else if (typedItems[i].species == species)
+          +            eligible = species == SPECIES_GENESECT ? technoBlast : multiAttack;
+          +        if (eligible && RandRangeDeterministic(1, ++typedCount, &seed) == 1)
+          +            typedItem = typedItems[i].item;
+          +    }
+          +    if (typedItem != ITEM_NONE) OFFER(typedItem, 12);
+          +#undef OFFER
+          +    return item;
+          +}
+           
           +static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 firstTrainer) {
+          +    bool8 assignedMega = FALSE;
                u32 nameHash = 0;
                u32 personalityValue;
                s32 i, j = 0;
-          @@ -1851,18 +1956,17 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+          @@ -1851,18 +2207,17 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
                        if (FlagGet(FLAG_DEBUG_GODMODE)) level = 1;
            #endif
            
@@ -236,13 +494,15 @@ jobs:
            
                        // Sets Pokemon Nature
                        SetMonData(&party[i], MON_DATA_NATURE, &partyData[i].nature);
-          @@ -1909,7 +2013,9 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+          @@ -1909,7 +2264,11 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
            
                        CalculateEnemyTrainerMonStats(&party[i]);
            
           -            if (trainerNum == TRAINER_OLDPLAYER || prototypeRandomized) {
           +            if (prototypeRandomized) {
           +                SetCompetitiveTrainerMoves(&party[i], species, trainerNum, i);
+          +                u16 heldItem = ChooseTrainerRandomizedHeldItem(&party[i], species, trainerNum, i, &assignedMega);
+          +                SetMonData(&party[i], MON_DATA_HELD_ITEM, &heldItem);
           +            } else if (trainerNum == TRAINER_OLDPLAYER) {
                            for (j = 0; j < MAX_MON_MOVES; j++) {
                                move = selectMoves(species, j, GetMonData(&party[i], MON_DATA_ATK, NULL), GetMonData(&party[i], MON_DATA_SPATK, NULL));
