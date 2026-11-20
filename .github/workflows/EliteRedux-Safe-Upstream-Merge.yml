@@ -1,1 +1,129 @@
-1name: Elite Redux - Safe Upstream Merge23on:4  workflow_dispatch:56permissions:7  contents: write89jobs:10  merge:11    runs-on: ubuntu-latest12    timeout-minutes: 2513    env:14      TARGET_BRANCH: upstream-update-test-${{ github.run_id }}15      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}16    steps:17      - name: Fetch both repositories without submodule checkout18        shell: bash19        run: |20          set -euo pipefail21          mkdir -p work report22          cd work23          git init -q24          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"25          git remote add upstream https://github.com/Elite-Redux/eliteredux-source.git26          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"27          git -c http.https://github.com/.extraheader="$AUTH_HEADER" fetch --no-tags origin +refs/heads/upcoming:refs/remotes/origin/upcoming28          git fetch --no-tags upstream +refs/heads/upcoming:refs/remotes/upstream/upcoming29          git checkout -q -b "$TARGET_BRANCH" refs/remotes/origin/upcoming30          git config user.name github-actions\[bot\]31          git config user.email 41898282+github-actions\[bot\]@users.noreply.github.com32          printf 'Local: %s\nUpstream: %s\n' "$(git rev-parse origin/upcoming)" "$(git rev-parse upstream/upcoming)" > ../report/commits.txt33          git merge-base origin/upcoming upstream/upcoming > ../report/merge-base.txt || true3435      - name: Attempt safe merge and check graphics36        id: merge37        shell: bash
+
+name: Elite Redux - Safe Upstream Merge
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TARGET_BRANCH: upstream-update-test-${{ github.run_id }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Fetch repositories without submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work report
+          cd work
+
+          git init -q
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git remote add upstream https://github.com/Elite-Redux/eliteredux-source.git
+
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+
+          git -c http.https://github.com/.extraheader="$AUTH_HEADER" fetch --no-tags origin +refs/heads/upcoming:refs/remotes/origin/upcoming
+          git fetch --no-tags upstream +refs/heads/upcoming:refs/remotes/upstream/upcoming
+
+          git checkout -q -b "$TARGET_BRANCH" refs/remotes/origin/upcoming
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          printf 'Local: %s\nUpstream: %s\n' "$(git rev-parse origin/upcoming)" "$(git rev-parse upstream/upcoming)" > ../report/commits.txt
+          git merge-base origin/upcoming upstream/upcoming > ../report/merge-base.txt || true
+
+      - name: Attempt safe merge and check graphics
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work
+
+          if git merge --no-commit --no-ff upstream/upcoming > ../report/merge-output.txt 2>&1; then
+            MERGE_STATUS=0
+          else
+            MERGE_STATUS=$?
+          fi
+
+          printf 'Git merge exit code: %s\n' "$MERGE_STATUS" > ../report/merge-exit-code.txt
+
+          git status --short > ../report/status-after-merge.txt
+          git diff --name-only --diff-filter=U > ../report/unmerged-paths.txt
+          git diff --name-status origin/upcoming -- graphics/pokemon > ../report/graphics-diff-from-local.txt
+          git diff --name-status origin/upcoming -- . ':!graphics/pokemon' > ../report/other-diff-from-local.txt
+
+          if [ "$MERGE_STATUS" -ne 0 ] || [ -s ../report/unmerged-paths.txt ]; then
+            echo 'Merge requires manual conflict resolution. Nothing will be pushed.' | tee ../report/result.txt
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BASE=$(git merge-base origin/upcoming upstream/upcoming)
+
+          git diff --name-only "$BASE" origin/upcoming -- graphics/pokemon > ../report/local-graphics-changed.txt
+          git diff --name-only origin/upcoming -- graphics/pokemon > ../report/merged-graphics-changed.txt
+
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+
+          names = Path('../report/local-graphics-changed.txt').read_text().splitlines()
+          problems = []
+
+          for path in names:
+              old = subprocess.run(
+                  ['git', 'rev-parse', f'origin/upcoming:{path}'],
+                  capture_output=True, text=True
+              )
+              new = subprocess.run(
+                  ['git', 'rev-parse', f':{path}'],
+                  capture_output=True, text=True
+              )
+              if old.returncode != 0 or new.returncode != 0 or old.stdout.strip() != new.stdout.strip():
+                  problems.append(path)
+
+          Path('../report/local-graphics-not-preserved.txt').write_text(
+              '\n'.join(problems) + ('\n' if problems else '')
+          )
+          PY
+
+          if [ -s ../report/local-graphics-not-preserved.txt ]; then
+            echo 'Some locally modified graphics changed in merge. Nothing will be pushed.' | tee ../report/result.txt
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo 'Clean merge; locally changed graphics are preserved byte-for-byte.' | tee ../report/result.txt
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+
+      - name: Commit and publish isolated test branch
+        if: steps.merge.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work
+
+          git commit -m "Merge official Elite Redux upcoming into isolated test branch"
+
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+
+          git -c http.https://github.com/.extraheader="$AUTH_HEADER" push origin "HEAD:refs/heads/$TARGET_BRANCH"
+
+          printf 'Published branch: %s\n' "$TARGET_BRANCH" >> ../report/result.txt
+          printf 'https://github.com/%s/tree/%s\n' "$GITHUB_REPOSITORY" "$TARGET_BRANCH" > ../report/branch-url.txt
+
+      - name: Upload merge report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: EliteRedux-Safe-Merge-Report
+          path: report/
+          if-no-files-found: warn
