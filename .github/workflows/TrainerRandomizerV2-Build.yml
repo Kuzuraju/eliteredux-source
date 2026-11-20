@@ -10,7 +10,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
 
     env:
       TEST_BRANCH: trainer-randomizer-v2
@@ -20,6 +20,7 @@ jobs:
       GAME_LANGUAGE: ENGLISH
       MODERN: 0
       COMPARE: 0
+      DEBIAN_FRONTEND: noninteractive
 
     defaults:
       run:
@@ -48,13 +49,14 @@ jobs:
           git rev-parse HEAD > ../report/source-commit.txt
           git log -1 --oneline
 
-      - name: Verify base ROM and prototype
+      - name: Verify ROM and prototype
         run: |
           set -euo pipefail
           cd work
 
           test -f rom.gba
           test -f src/battle_main.c
+          test -f src/pokemon.c
           test -f src/ui_intro_options.c
           test -f include/global.h
 
@@ -63,10 +65,11 @@ jobs:
           grep -q SETTING_TRAINER_RANDOMIZER_MODE src/ui_intro_options.c
 
           ls -lh rom.gba
-          echo "Prototype files verified." \
+
+          echo "Prototype verified." \
             > ../report/prototype-check.txt
 
-      - name: Fetch pinned official er-config
+      - name: Fetch official er-config
         run: |
           set -euo pipefail
           cd work
@@ -180,7 +183,6 @@ jobs:
               "TrainerRandomizerSpeciesAllowed(u16 species);"
           )
 
-          # Remove any existing copy of the declaration.
           source = re.sub(
               r'(?m)^[ \t]*extern bool8[ \t]+'
               r'TrainerRandomizerSpeciesAllowed'
@@ -189,8 +191,6 @@ jobs:
               source
           )
 
-          # Insert the declaration after the last
-          # preprocessor include, never before headers.
           includes = list(
               re.finditer(
                   r'(?m)^[ \t]*#[ \t]*include[ \t]+'
@@ -201,7 +201,7 @@ jobs:
 
           if not includes:
               raise SystemExit(
-                  "ERROR: No #include found in battle_main.c."
+                  "ERROR: No includes found in battle_main.c."
               )
 
           position = includes[-1].end()
@@ -214,8 +214,6 @@ jobs:
               + source[position:]
           )
 
-          # The bridge must be implemented in pokemon.c,
-          # where the original eligibility function exists.
           function = (
               "\nbool8 TrainerRandomizerSpeciesAllowed"
               "(u16 species)\n"
@@ -230,35 +228,25 @@ jobs:
               target
           ):
               raise SystemExit(
-                  "ERROR: Eligibility function not found "
-                  "in pokemon.c."
+                  "ERROR: Eligibility function not found."
               )
 
-          if re.search(
+          if not re.search(
               r'\bTrainerRandomizerSpeciesAllowed'
               r'\s*\([^)]*\)\s*\{',
               target
           ):
-              print("Bridge implementation already exists.")
-          else:
               target += function
-              print("Added bridge implementation.")
 
           battle.write_text(source)
           pokemon.write_text(target)
 
-          print(
-              "Bridge declaration inserted after includes."
-          )
+          print("Visibility bridge prepared.")
           PY
 
           git diff -- \
             src/battle_main.c src/pokemon.c \
             > ../report/bridge.patch
-
-          grep -n TrainerRandomizerSpeciesAllowed \
-            src/battle_main.c src/pokemon.c \
-            > ../report/bridge-locations.txt
 
       - name: Configure debug shortcut
         run: |
@@ -277,31 +265,125 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install dependencies
+      - name: Check available dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p report
+
+          {
+            echo "Dependency preflight"
+            date -u
+            uname -a
+            echo
+
+            for command in \
+              git \
+              make \
+              gcc \
+              arm-none-eabi-gcc \
+              arm-none-eabi-as \
+              wget \
+              unzip \
+              java
+            do
+              if command -v "$command" >/dev/null 2>&1; then
+                echo "OK: $command"
+              else
+                echo "MISSING: $command"
+              fi
+            done
+
+            echo
+            dpkg-query -W \
+              build-essential \
+              git \
+              libpng-dev \
+              gcc-arm-none-eabi \
+              binutils-arm-none-eabi \
+              unzip \
+              wget \
+              2>&1 || true
+
+          } | tee report/dependency-preflight.log
+
+      - name: Install missing dependencies
+        timeout-minutes: 10
         run: |
           set -euo pipefail
 
-          sudo apt-get update
+          {
+            echo "Starting dependency installation"
+            date -u
 
-          sudo apt-get install -y \
-            build-essential \
-            git \
-            libpng-dev \
-            gcc-arm-none-eabi \
-            binutils-arm-none-eabi \
-            unzip \
-            wget
+            REQUIRED=(
+              build-essential
+              git
+              libpng-dev
+              gcc-arm-none-eabi
+              binutils-arm-none-eabi
+              unzip
+              wget
+            )
 
-          java -version
-          arm-none-eabi-gcc --version
+            MISSING=()
+
+            for package in "${REQUIRED[@]}"; do
+              if dpkg-query -W \
+                -f='${Status}' "$package" 2>/dev/null \
+                | grep -qx 'install ok installed'; then
+
+                echo "Already installed: $package"
+              else
+                echo "Missing package: $package"
+                MISSING+=("$package")
+              fi
+            done
+
+            if [ "${#MISSING[@]}" -eq 0 ]; then
+              echo "All packages already installed."
+            else
+              echo "Updating apt indexes..."
+
+              timeout --signal=TERM --kill-after=15s \
+                240s \
+                sudo apt-get \
+                  -o DPkg::Lock::Timeout=30 \
+                  -o Acquire::Retries=2 \
+                  -o Acquire::http::Timeout=30 \
+                  -o Acquire::https::Timeout=30 \
+                  update
+
+              echo "Installing missing packages..."
+
+              timeout --signal=TERM --kill-after=15s \
+                300s \
+                sudo apt-get \
+                  -o DPkg::Lock::Timeout=30 \
+                  -o Acquire::Retries=2 \
+                  -o Acquire::http::Timeout=30 \
+                  -o Acquire::https::Timeout=30 \
+                  install -y --no-install-recommends \
+                  "${MISSING[@]}"
+            fi
+
+            echo
+            echo "Checking ARM compiler..."
+            arm-none-eabi-gcc --version
+
+            echo
+            echo "Dependency installation completed."
+            date -u
+
+          } 2>&1 | tee report/dependencies.log
 
       - name: Install Kotlin 2.1.0
+        timeout-minutes: 5
         run: |
           set -euo pipefail
 
           KOTLIN_VERSION=2.1.0
 
-          wget -q \
+          wget --timeout=30 --tries=3 -q \
             "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
             -O "$RUNNER_TEMP/kotlin.zip"
 
@@ -317,6 +399,7 @@ jobs:
             -version
 
       - name: Install Poryscript 3.5.2
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           cd work/tools
@@ -326,7 +409,7 @@ jobs:
             poryscript-linux \
             poryscript-linux.zip
 
-          wget -q \
+          wget --timeout=30 --tries=3 -q \
             https://github.com/huderlem/poryscript/releases/download/3.5.2/poryscript-linux.zip \
             -O poryscript-linux.zip
 
@@ -361,10 +444,10 @@ jobs:
           )
 
           path.write_text(source)
-          print("Compiler flags updated.")
           PY
 
       - name: Generate code
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           cd work
@@ -379,6 +462,7 @@ jobs:
             include/generated/data/megas/adoption_center.h
 
       - name: Compile Trainer Randomizer V2
+        timeout-minutes: 30
         run: |
           set -euo pipefail
           cd work
@@ -416,10 +500,6 @@ jobs:
 
           echo "BPS verification successful." \
             > ../report/patch-result.txt
-
-          ls -lh \
-            TrainerRandomizerV2.bps \
-            TrainerRandomizerV2.gba
 
       - name: Upload diagnostic report
         if: always()
