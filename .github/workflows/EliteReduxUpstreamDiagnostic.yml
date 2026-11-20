@@ -1,0 +1,92 @@
+name: Elite Redux Upstream Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compare with official upstream
+        shell: bash
+        env:
+          UPSTREAM_URL: https://github.com/Elite-Redux/eliteredux-source.git
+          UPSTREAM_BRANCH: upcoming
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          git remote add official "$UPSTREAM_URL"
+          git fetch --no-tags official "$UPSTREAM_BRANCH"
+          git rev-parse HEAD > diagnostics/local-commit.txt
+          git rev-parse FETCH_HEAD > diagnostics/upstream-commit.txt
+          git status --short > diagnostics/worktree-status.txt
+          {
+            echo "Local repository: $GITHUB_REPOSITORY"
+            echo "Local branch: $GITHUB_REF_NAME"
+            echo "Local commit: $(git rev-parse HEAD)"
+            echo "Official upstream: $UPSTREAM_URL ($UPSTREAM_BRANCH)"
+            echo "Upstream commit: $(git rev-parse FETCH_HEAD)"
+            echo
+            if git merge-base HEAD FETCH_HEAD >/dev/null 2>&1; then
+              BASE=$(git merge-base HEAD FETCH_HEAD)
+              echo "Shared history: YES"
+              echo "Merge base: $BASE"
+              echo "Commits local-only / upstream-only:"
+              git rev-list --left-right --count HEAD...FETCH_HEAD
+            else
+              echo "Shared history: NO"
+              echo "A normal merge may not be appropriate."
+            fi
+          } > diagnostics/summary.txt
+          git diff --name-status HEAD FETCH_HEAD > diagnostics/all-file-differences.txt
+          git diff --stat HEAD FETCH_HEAD > diagnostics/difference-summary.txt
+          git diff --name-status HEAD FETCH_HEAD -- graphics/pokemon > diagnostics/pokemon-graphics-differences.txt
+          git diff --name-status HEAD FETCH_HEAD -- src include > diagnostics/code-differences.txt
+          git diff --name-status HEAD FETCH_HEAD -- .github/workflows > diagnostics/workflow-differences.txt
+          git ls-tree -r --name-only HEAD graphics/pokemon | sort > diagnostics/local-pokemon-graphics.txt
+          git ls-tree -r --name-only FETCH_HEAD graphics/pokemon | sort > diagnostics/upstream-pokemon-graphics.txt
+          comm -23 diagnostics/local-pokemon-graphics.txt diagnostics/upstream-pokemon-graphics.txt > diagnostics/graphics-only-in-local.txt
+          comm -13 diagnostics/local-pokemon-graphics.txt diagnostics/upstream-pokemon-graphics.txt > diagnostics/graphics-only-in-upstream.txt
+          if git merge-base HEAD FETCH_HEAD >/dev/null 2>&1; then
+            BASE=$(git merge-base HEAD FETCH_HEAD)
+            git diff --name-only "$BASE" HEAD -- graphics/pokemon | sort > diagnostics/graphics-changed-locally.txt
+            git diff --name-only "$BASE" FETCH_HEAD -- graphics/pokemon | sort > diagnostics/graphics-changed-upstream.txt
+            comm -12 diagnostics/graphics-changed-locally.txt diagnostics/graphics-changed-upstream.txt > diagnostics/graphics-changed-on-both-sides.txt
+            git diff --name-status "$BASE" HEAD > diagnostics/local-changes-since-base.txt
+            git diff --name-status "$BASE" FETCH_HEAD > diagnostics/upstream-changes-since-base.txt
+          else
+            printf 'No shared Git history detected.\n' > diagnostics/graphics-changed-on-both-sides.txt
+          fi
+          {
+            echo "=== Official source references to Aerodactyl Redux ==="
+            git grep -n -i -E 'aerodactyl.*(redux|/mr/)|SPECIES_AERODACTYL_MEGA_REDUX' FETCH_HEAD -- ':!*.png' || true
+            echo
+            echo "=== Local source references to Aerodactyl Redux ==="
+            git grep -n -i -E 'aerodactyl.*(redux|/mr/)|SPECIES_AERODACTYL_MEGA_REDUX' HEAD -- ':!*.png' || true
+          } > diagnostics/aerodactyl-references.txt
+          {
+            echo "=== Local graphics paths ==="
+            grep -i 'aerodactyl' diagnostics/local-pokemon-graphics.txt || true
+            echo
+            echo "=== Upstream graphics paths ==="
+            grep -i 'aerodactyl' diagnostics/upstream-pokemon-graphics.txt || true
+          } > diagnostics/aerodactyl-graphics.txt
+          cat diagnostics/summary.txt
+          echo "Diagnostic reports generated. No repository changes were pushed."
+
+      - name: Upload diagnostic reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: EliteRedux-Upstream-Diagnostic
+          path: diagnostics/
+          if-no-files-found: warn
