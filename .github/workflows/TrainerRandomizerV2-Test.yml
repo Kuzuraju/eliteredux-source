@@ -62,7 +62,7 @@ jobs:
            void CreateSecretBaseEnemyParty(struct SecretBase* secretBaseRecord);
            u8 GetSecretBaseTrainerPicIndex(void);
           diff --git a/src/battle_main.c b/src/battle_main.c
-          index 3768b301..e4fd3122 100644
+          index 3768b301..0bd9bfbf 100644
           --- a/src/battle_main.c
           +++ b/src/battle_main.c
           @@ -22,6 +22,7 @@
@@ -81,7 +81,7 @@ jobs:
            #include "mgba_printf/mgba.h"
            #include "mgba_printf/mini_printf.h"
            #include "palette.h"
-          @@ -1726,26 +1728,449 @@ static void sub_8038538(struct Sprite* sprite) {
+          @@ -1726,26 +1728,464 @@ static void sub_8038538(struct Sprite* sprite) {
                }
            }
            
@@ -127,7 +127,7 @@ jobs:
           +}
           +
           +// Rank a deterministic sample so evolution stage is a preference, with power as a second signal.
-          +static SpeciesEnum GetPrototypeTrainerSpecies(u16 trainerNum, u8 slot, u8 difficulty, SpeciesEnum original, u8 level, const u8 *stages)
+          +static SpeciesEnum GetPrototypeTrainerSpecies(u16 trainerNum, u8 slot, u8 difficulty, SpeciesEnum original, u8 level, const u8 *stages, struct Pokemon *party)
            {
           -    u32 seed = VarGet(VAR_RANDOMIZED_SEED);
           -    u16 attempt;
@@ -168,8 +168,14 @@ jobs:
           +                score += 45;
           +        }
           +
-          +        // Leave room for variety among candidates of roughly comparable power.
-          +        score += RandRangeDeterministic(0, 60, &seed);
+          +        // Spread close matches across trainers and avoid repeats within a party.
+          +        score += RandRangeDeterministic(0, 135, &seed);
+          +        for (u8 previous = 0; previous < slot; previous++) {
+          +            if (GetMonData(&party[previous], MON_DATA_SPECIES, NULL) == candidate) {
+          +                score += 200;
+          +                break;
+          +            }
+          +        }
           +        if (score < bestScore) {
           +            bestScore = score;
           +            bestSpecies = candidate;
@@ -187,7 +193,8 @@ jobs:
           +{
           +    const struct BattleMove *data = &gBattleMoves[move];
           +    bool8 status = data->split == SPLIT_STATUS;
-          +    s32 score = (s32)((seed ^ ((u32)move * 0x9E3779B9u)) >> 28);
+          +    u32 moveSeed = seed ^ ((u32)move * 0x9E3779B9u) ^ ((u32)count * 0x85EBCA6Bu);
+          +    s32 score = RandRangeDeterministic(0, 48, &moveSeed);
           +
           +    for (u8 i = 0; i < count; i++) {
           +        const struct BattleMove *previous = &gBattleMoves[selected[i]];
@@ -229,10 +236,18 @@ jobs:
           +    u16 highestStat = attack > spAttack ? attack : spAttack;
           +    u16 power = data->power > 140 ? 140 : data->power;
           +
+          +    // Diminishing returns let a good 75-power move compete with a stronger one.
+          +    if (count == 0 && power > 0 && power < 45)
+          +        score -= 25;
+          +    if (power > 65)
+          +        power = 65 + (power - 65) / 2;
+          +
           +    score += 40 + (power * accuracy / 100) * offensiveStat / (highestStat ? highestStat : 1);
           +    if (data->type == gBaseStats[species].type1 || data->type == gBaseStats[species].type2)
           +        score += 40;
-          +    if (data->twoTurnMove || data->everyOtherTurn)
+          +    if (move == MOVE_FOCUS_PUNCH)
+          +        score -= 85; // Taking a hit before acting can cancel it.
+          +    else if (data->twoTurnMove || data->everyOtherTurn)
           +        score -= 45;
           +    return score;
           +}
@@ -541,7 +556,7 @@ jobs:
                u32 nameHash = 0;
                u32 personalityValue;
                s32 i, j = 0;
-          @@ -1809,6 +2234,10 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+          @@ -1809,6 +2249,10 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
                    if (FlagGet(FLAG_DEBUG_GODMODE)) monsCount = 1;
            #endif
            
@@ -552,7 +567,7 @@ jobs:
                    for (i = 0; i < monsCount; i++) {
                        if (isDoubleBattle == TRUE)
                            personalityValue = 0x80;
-          @@ -1851,18 +2280,17 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+          @@ -1851,18 +2295,17 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
                        if (FlagGet(FLAG_DEBUG_GODMODE)) level = 1;
            #endif
            
@@ -574,7 +589,7 @@ jobs:
           +            } else {
           +                species = partyData[i].species;
           +                if (gSaveBlock2Ptr->trainerRandomizedMode) {
-          +                    species = GetPrototypeTrainerSpecies(trainerNum, i, difficultySetting, species, level, evolutionStages);
+          +                    species = GetPrototypeTrainerSpecies(trainerNum, i, difficultySetting, species, level, evolutionStages, party);
           +                    prototypeRandomized = (species != partyData[i].species);
           +                }
           +            }
@@ -582,7 +597,7 @@ jobs:
            
                        // Sets Pokemon Nature
                        SetMonData(&party[i], MON_DATA_NATURE, &partyData[i].nature);
-          @@ -1909,7 +2337,11 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+          @@ -1909,7 +2352,11 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
            
                        CalculateEnemyTrainerMonStats(&party[i]);
            
@@ -595,7 +610,7 @@ jobs:
                            for (j = 0; j < MAX_MON_MOVES; j++) {
                                move = selectMoves(species, j, GetMonData(&party[i], MON_DATA_ATK, NULL), GetMonData(&party[i], MON_DATA_SPATK, NULL));
                                SetMonData(&party[i], MON_DATA_MOVE1 + j, &move);
-          @@ -1935,6 +2367,9 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
+          @@ -1935,6 +2382,9 @@ static u8 CreateNPCTrainerParty(struct Pokemon* party, u16 trainerNum, bool8 fir
                        SetMonData(&party[i], MON_DATA_POKEBALL, &gTrainerBallTable[j].Ball);
                    }
            
